@@ -344,12 +344,13 @@ impl AgentCore {
 
     /// 会话正常结束/取消：回 READY + Disconnected 事件（好友会话附带 FriendDisconnected）。
     fn teardown_session(&self, reason: &str) -> bool {
-        let (had, friend, peer_id) = {
+        let (had, friend, peer_id, session_id) = {
             let g = self.session.lock().unwrap();
             (
                 g.is_some(),
                 g.as_ref().map(|s| s.friend_session).unwrap_or(false),
                 g.as_ref().map(|s| s.peer.device_id.clone()),
+                g.as_ref().map(|s| s.session_id.clone()).unwrap_or_default(),
             )
         };
         self.abort_session_resources();
@@ -358,6 +359,12 @@ impl AgentCore {
         // M1-2：会话结束/取消 → 当前路径复位（UI 不再显示 DirectLink / N2N Relay）。
         *self.current_path.lock().unwrap() = String::new();
         if had {
+            tracing::info!(
+                target: "agent",
+                session_id = %session_id,
+                reason = %reason,
+                "[SESSION CLOSE]"
+            );
             self.set_state(AgentState::Ready);
             let _ = self.event_tx.send(Event::Disconnected { reason: reason.into() });
             if friend {
@@ -410,6 +417,16 @@ impl AgentCore {
                     ));
                     return;
                 };
+                // M1-2.x：Session 生命周期日志——创建即落盘，code 唯一来源是
+                // Controller 的 POST /v1/sessions 响应（前端/Agent 均不自行生成）。
+                tracing::info!(
+                    target: "agent",
+                    session_id = %view.session_id,
+                    code = %code,
+                    device_id = %core.device_id,
+                    expires_at = %view.expires_at.as_deref().unwrap_or(""),
+                    "[SESSION CREATE]"
+                );
                 let _ = reply.send(ok(serde_json::json!({
                     "session_id": view.session_id,
                     "code": code,
@@ -441,8 +458,35 @@ impl AgentCore {
                 tokio::spawn(async move {
                     let client = core.controller();
                     let view = match client.join_session(&core.credential(), &code) {
-                        Ok(v) => v,
-                        Err(e) => return core.fail("SESSION_NOT_FOUND", e),
+                        Ok(v) => {
+                            // M1-2.x：Session 生命周期日志——加入成功（Controller 已核验 6 位码）。
+                            tracing::info!(
+                                target: "agent",
+                                input_code = %code,
+                                found_session = true,
+                                session_id = %v.session_id,
+                                "[SESSION JOIN]"
+                            );
+                            v
+                        }
+                        Err(e) => {
+                            // M1-2.x：按 6 位码查询会话失败——透传 Controller 真实业务码
+                            // （SESSION_CODE_INVALID 等），不再硬编码 SESSION_NOT_FOUND。
+                            let reason = e.to_string();
+                            let err_code = if e.code.is_empty() {
+                                "SESSION_NOT_FOUND".to_string()
+                            } else {
+                                e.code.clone()
+                            };
+                            tracing::warn!(
+                                target: "agent",
+                                input_code = %code,
+                                found_session = false,
+                                reason = %reason,
+                                "[SESSION NOT FOUND]"
+                            );
+                            return core.fail(&err_code, reason);
+                        }
                     };
                     if core.path.lock().unwrap().clone() == PathChoice::N2N {
                         joiner_flow_n2n(core, view, false).await;
@@ -1650,16 +1694,29 @@ async fn creator_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend:
         if Instant::now() > deadline {
             return core.fail_timeout("WAIT_PEER_TIMEOUT", "等待好友加入");
         }
-        if let Ok(v) = client.get_session(&cred, &session_id) {
-            if let (Some(me), Some(other)) = (my_member(&v, &core.device_id), other_member(&v, &core.device_id)) {
-                if me.overlay_ip.is_some() && other.overlay_ip.is_some() {
-                    break (
-                        other.device_id.clone(),
-                        other.public_key(),
-                        other.overlay_ip.clone(),
-                        me.overlay_ip.clone(),
-                    );
+        match client.get_session(&cred, &session_id) {
+            Ok(v) => {
+                if let (Some(me), Some(other)) =
+                    (my_member(&v, &core.device_id), other_member(&v, &core.device_id))
+                {
+                    if me.overlay_ip.is_some() && other.overlay_ip.is_some() {
+                        break (
+                            other.device_id.clone(),
+                            other.public_key(),
+                            other.overlay_ip.clone(),
+                            me.overlay_ip.clone(),
+                        );
+                    }
                 }
+            }
+            Err(e) => {
+                // M1-2.x：会话轮询查询失败（会话被删/过期等）——debug 级，避免刷屏。
+                tracing::debug!(
+                    target: "agent",
+                    session_id = %session_id,
+                    reason = %e.to_string(),
+                    "[SESSION NOT FOUND] poll"
+                );
             }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1915,16 +1972,29 @@ async fn creator_flow_n2n_with_view(core: Arc<AgentCore>, view: SessionView, fri
         if Instant::now() > deadline {
             return core.fail_timeout("WAIT_PEER_TIMEOUT", "等待好友加入");
         }
-        if let Ok(v) = client.get_session(&cred, &session_id) {
-            if let (Some(me), Some(other)) = (my_member(&v, &core.device_id), other_member(&v, &core.device_id)) {
-                if me.overlay_ip.is_some() && other.overlay_ip.is_some() {
-                    break (
-                        other.device_id.clone(),
-                        other.public_key(),
-                        other.overlay_ip.clone(),
-                        me.overlay_ip.clone(),
-                    );
+        match client.get_session(&cred, &session_id) {
+            Ok(v) => {
+                if let (Some(me), Some(other)) =
+                    (my_member(&v, &core.device_id), other_member(&v, &core.device_id))
+                {
+                    if me.overlay_ip.is_some() && other.overlay_ip.is_some() {
+                        break (
+                            other.device_id.clone(),
+                            other.public_key(),
+                            other.overlay_ip.clone(),
+                            me.overlay_ip.clone(),
+                        );
+                    }
                 }
+            }
+            Err(e) => {
+                // M1-2.x：会话轮询查询失败（会话被删/过期等）——debug 级，避免刷屏。
+                tracing::debug!(
+                    target: "agent",
+                    session_id = %session_id,
+                    reason = %e.to_string(),
+                    "[SESSION NOT FOUND] poll"
+                );
             }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;

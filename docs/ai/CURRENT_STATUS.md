@@ -28,6 +28,8 @@ v0.1.0
 
 [x] M1-2 N2N + Supernode（含 DirectLink 失败自动回退 N2N Relay）
 
+[x] Session 生命周期日志（CREATE / JOIN / NOT FOUND / CLOSE + join 错误码透传）
+
 
 ## Current Development
 

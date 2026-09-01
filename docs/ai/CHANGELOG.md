@@ -33,6 +33,27 @@ Added:
   overlay ping 64/512/1200/1400B）、force_directlink_success 保持 directlink。
 
 
+## Session 生命周期日志（2026-09-01）
+
+Fixed:
+
+- `JoinQuickSession` join 失败不再硬编码 `SESSION_NOT_FOUND`：透传 Controller 真实
+  业务码（无效码 → `SESSION_CODE_INVALID` 等），可直接区分过期/状态/限流错误。
+
+Added:
+
+- Agent 侧 Session 生命周期日志：`[SESSION CREATE]`（session_id/code/device_id/
+  expires_at）、`[SESSION JOIN]`（input_code/found_session/session_id）、
+  `[SESSION NOT FOUND]`（input_code/reason）、`[SESSION CLOSE]`（session_id/reason）；
+  creator 轮询 `get_session` 失败 → `[SESSION NOT FOUND] poll`（debug 级）。
+- Controller（Go slog）同步统一生命周期日志前缀；`[SESSION CLOSE]` 覆盖好友直连
+  拒绝与好友删除时关闭的会话。
+- 确认 6 位码唯一来源 = Controller `POST /v1/sessions` 响应（`connection_sessions`
+  表写入 + 原子分配）；前端 `app.js` 仅校验/展示 `data.code`，不自行生成。
+- 集成测试：session_lifecycle_test（Create 响应来自 Controller → 无效码 join 透传
+  `SESSION_CODE_INVALID` → 正确码 join 双端 Connected）。
+
+
 ## Future
 
 M1-3:

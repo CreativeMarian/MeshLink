@@ -172,6 +172,8 @@ func (s *Server) handleRevokeFriendship(w http.ResponseWriter, r *http.Request, 
 	}
 	notifyFriendship(r, s, updated, events.TypeFriendRemoved, dev.DeviceID)
 	for _, sid := range closed {
+		s.logger.Info("[SESSION CLOSE]", "session_id", sid, "reason", "friendship_removed",
+			"by", dev.DeviceID)
 		s.bus.Publish(dev.DeviceID, newEvent(events.TypeRequestRejected, sid, ""))
 		other := fs.DeviceA
 		if other == dev.DeviceID {
@@ -298,8 +300,8 @@ func (s *Server) handleRejectConnectionRequest(w http.ResponseWriter, r *http.Re
 	if err == nil && creator != "" {
 		s.bus.Publish(creator, newEvent(events.TypeRequestRejected, r.PathValue("session_id"), dev.DeviceID))
 	}
-	s.logger.Info("connection request rejected", "session_id", r.PathValue("session_id"),
-		"target", dev.DeviceID)
+	s.logger.Info("[SESSION CLOSE]", "session_id", r.PathValue("session_id"),
+		"reason", "connection_request_rejected", "target", dev.DeviceID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "rejected"})
 }
 

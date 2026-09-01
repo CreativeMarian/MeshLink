@@ -3,11 +3,13 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"meshlink/server/controller/internal/events"
 	"meshlink/server/controller/internal/model"
+	"meshlink/server/controller/internal/store"
 )
 
 // createSessionRequest POST /v1/sessions 请求体。
@@ -81,8 +83,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, dev
 		writeError(w, errInternal(err))
 		return
 	}
-	s.logger.Info("session created", "session_id", sess.SessionID,
-		"code", sess.Code, "creator", dev.DeviceID, "expires_at", sess.ExpiresAt)
+	s.logger.Info("[SESSION CREATE]", "session_id", sess.SessionID,
+		"code", sess.Code, "device_id", dev.DeviceID, "expires_at", sess.ExpiresAt)
 	writeJSON(w, http.StatusOK, newSessionView(sess, members, true))
 }
 
@@ -110,6 +112,14 @@ func (s *Server) handleJoinSession(w http.ResponseWriter, r *http.Request, dev m
 	sess, members, err := s.store.JoinSession(r.Context(), code, dev.DeviceID)
 	if err != nil {
 		s.limiter.RecordFail(ip, dev.DeviceID)
+		if errors.Is(err, store.ErrSessionNotFound) {
+			// M1-2.x：按 6 位码查询会话不存在（映射为 SESSION_CODE_INVALID）。
+			s.logger.Warn("[SESSION NOT FOUND]", "input_code", code,
+				"device_id", dev.DeviceID, "reason", err.Error())
+		} else {
+			s.logger.Warn("[SESSION JOIN] failed", "input_code", code,
+				"found_session", false, "device_id", dev.DeviceID, "reason", err.Error())
+		}
 		if ae := mapStoreError(err); ae != nil {
 			writeError(w, ae)
 			return
@@ -122,8 +132,8 @@ func (s *Server) handleJoinSession(w http.ResponseWriter, r *http.Request, dev m
 	// 通知 creator：joiner 已加入（WSS 加速；轮询为权威通道）。
 	s.bus.Publish(sess.CreatorDeviceID, newEvent(events.TypeSessionJoined, sess.SessionID, dev.DeviceID))
 
-	s.logger.Info("session joined", "session_id", sess.SessionID,
-		"creator", sess.CreatorDeviceID, "joiner", dev.DeviceID)
+	s.logger.Info("[SESSION JOIN]", "input_code", code, "found_session", true,
+		"session_id", sess.SessionID, "creator", sess.CreatorDeviceID, "joiner", dev.DeviceID)
 	// joiner 无需看到码本身（会话已建立），withCode=false。
 	writeJSON(w, http.StatusOK, newSessionView(sess, members, false))
 }
