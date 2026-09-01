@@ -306,6 +306,30 @@ function renderStatus(snap) {
 
 /* ---------------- 步骤渲染 ---------------- */
 
+// Connected 视图兜底：当 GetStatus 已是 CONNECTED 但 Connected 事件可能在 UI 订阅
+// listen() 之前发出（agent 已在运行 / 页面重载）而丢失时，据此填充连接详情并切到
+// 连接页。只在连接流程视图（create/progress/join/home）与初始加载时触发，绝不打扰
+// 用户在 settings/friends/devices/diag 等页面的浏览。
+function syncConnectedView(snap) {
+  if (!snap || snap.state !== "CONNECTED") return false;
+  const peer = snap.session && snap.session.peers && snap.session.peers[0];
+  if (!peer) return false;
+  if (S.view === "connected") return true;
+  if (!["create", "progress", "join", "home"].includes(S.view)) return false;
+  S.connectedInfo = {
+    local: peer.local_overlay_ip,
+    peer: peer.peer_overlay_ip,
+    peerDevice: peer.device_id,
+    path: snap.current_path || "",
+  };
+  $("conn-peer-ip").textContent = peer.peer_overlay_ip || "--";
+  $("conn-local-ip").textContent = peer.local_overlay_ip || "--";
+  $("conn-peer-device").textContent = peer.device_id || "--";
+  $("conn-path").textContent = (snap.current_path === "n2n") ? "N2N Relay" : "DirectLink";
+  show("connected");
+  return true;
+}
+
 function setStep(n) {
   for (const li of document.querySelectorAll(".step")) {
     const i = Number(li.dataset.step);
@@ -365,25 +389,19 @@ function handleEvent(ev) {
       break;
 
     case "PeerFound":
-      if (S.view !== "create") show("progress");
-      setStep(STEP_DIRECT);
-      break;
-
     case "GatheringCandidates":
-      // 只在加入/连接流程中切换到进度页；创建方正在查看连接码（create/home）时不得被顶走。
-      if (S.view === "join" || S.view === "progress") show("progress");
-      setStep(STEP_DIRECT);
-      break;
-
     case "Punching":
-      if (S.view !== "progress") show("progress");
-      setStep(STEP_DIRECT);
+    case "NoiseHandshaking": {
+      // 只在加入方流程（join/progress 视图）切换到进度页。
+      // 创建方正在查看连接码（create/home）时一律不得被顶走（含 PeerFound/Punching/
+      // NoiseHandshaking，这些事件双方都会收到；顶走会导致连接码页消失）。
+      if (S.view === "join" || S.view === "progress") {
+        show("progress");
+        if (kind === "NoiseHandshaking") setStep(STEP_SECURE);
+        else setStep(STEP_DIRECT);
+      }
       break;
-
-    case "NoiseHandshaking":
-      if (S.view !== "progress") show("progress");
-      setStep(STEP_SECURE);
-      break;
+    }
 
     case "Connected":
       S.connectedInfo = {
@@ -639,7 +657,10 @@ async function heartbeat() {
   } catch { /* Agent 断开：走 r 为 null 分支 */ }
   if (r && r.ok && r.data) {
     const snap = r.data;
+    const wasConnected = S.connState === "CONNECTED";
     renderStatus(snap);
+    // Connected 事件丢失兜底：状态刚进入 CONNECTED 时补齐连接详情视图（不打扰后续浏览）。
+    if (snap.state === "CONNECTED" && !wasConnected) syncConnectedView(snap);
     if (S.view === "progress" && snap.state === "CONFIGURING_OVERLAY") {
       setStep(STEP_OVERLAY);
     }
@@ -1365,6 +1386,7 @@ function waitReady(timeoutMs = 20000) {
           const s = r.data;
           if (s.state === "READY" || s.state === "CONNECTED") {
             renderStatus(s);
+            if (s.state === "CONNECTED") syncConnectedView(s);
             loadControllerStatus();
             refreshFriends();
             refreshRecent();
@@ -1390,6 +1412,7 @@ async function boot() {
         waitReady();
       } else {
         renderStatus(snap);
+        syncConnectedView(snap);
       }
     }
     else if (r && !r.ok && r.error) {
