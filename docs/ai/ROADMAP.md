@@ -1,18 +1,56 @@
 ﻿# MeshLink Roadmap
 
-## Completed
+
+## Phase M0
+
+[x] Network foundation
 
 [x] DirectLink
-[x] Noise Security
+
+[x] NAT traversal
+
+[x] Noise security
+
+
+## Phase M1
+
 [x] Controller
-[x] Friend System
-[x] Recent Connection
 
-## Next
+[x] Friend system
 
-[ ] N2N + Supernode
+[x] Recent connection
+
+[ ] N2N Supernode
+
 [ ] Path Manager
-[ ] Automatic Route Switching
-[ ] File Transfer
-[ ] Remote Desktop
-[ ] Cloudflare Relay
+
+
+## Phase M2
+
+[ ] File transfer
+
+[ ] Multi-thread download
+
+[ ] Chunk transfer
+
+[ ] Resume transfer
+
+
+## Phase M3
+
+[ ] Remote desktop
+
+[ ] Screen streaming
+
+[ ] Input control
+
+
+## Phase M4
+
+[ ] Cloudflare relay
+
+[ ] Installer
+
+[ ] Auto update
+
+[ ] Product release

@@ -1,28 +1,47 @@
 ﻿# MeshLink Current Status
 
+
 ## Current Version
 
-M1-1.5
+v0.1.0
 
-## Completed
 
-- DirectLink P2P
-- Noise IK encrypted transport
-- Controller MVP
-- Friend System
-- Recent Connection
-- Process Lifecycle Management
+## Completed Milestones
 
-## In Progress
+[x] Project architecture
 
-- N2N Supernode
-- Path Manager
+[x] DirectLink P2P
 
-## Planned
+[x] Noise IK encryption
 
-- File Transfer
-- Remote Desktop
-- Cloudflare Relay
+[x] Controller MVP
+
+[x] Device identity
+
+[x] Friend system
+
+[x] Six digit invite code
+
+[x] Recent connection
+
+[x] Process lifecycle
+
+
+## Current Development
+
+M1-2 N2N + Supernode
+
+
+## Next Milestones
+
+M1-3 Path Manager
+
+M2 File Transfer
+
+M3 Remote Desktop
+
+M4 Productization
+
 
 ## Last Update
 

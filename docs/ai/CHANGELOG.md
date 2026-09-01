@@ -1,15 +1,35 @@
 ﻿# MeshLink Changelog
 
-## 2026-09-01
+
+## v0.1.0
 
 Added:
 
-- GitHub project management
-- AI project status documents
+- DirectLink P2P
+- Noise encryption
+- Controller system
+- Friend management
+- Recent connections
+- Runtime lifecycle
 
-Previous:
 
-- MVP architecture completed
-- DirectLink implemented
-- Controller implemented
-- Friend system implemented
+## Future
+
+M1-2:
+
+N2N fallback
+
+
+M1-3:
+
+Path Manager
+
+
+M2:
+
+File transfer
+
+
+M3:
+
+Remote desktop
