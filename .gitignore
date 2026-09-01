@@ -1,29 +1,26 @@
-# Rust
-target/
-**/target/
-
-# Node
-node_modules/
-
 # Build
+target/
 dist/
 
-# IDE
-.vscode/
-.idea/
-
-# Logs
-*.log
+# Binary
+*.exe
+*.dll
+*.zip
 
 # Runtime
 runtime/
 
-# Temp
-tmp/
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Test
+exchange-test/
+*.txt
+
+# Logs
+*.log
 
 # Secrets
 .env
-
-# OS
-Thumbs.db
-.DS_Store
