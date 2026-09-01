@@ -1,7 +1,42 @@
 # MeshLink Changelog
 
 
+## 双机公网 DirectLink 连通 + UI 流程顶走/事件丢失修复（2026-09-02，commit 8c4fa49）
+
+Fixed:
+
+- **UI 流程顶走根因（真实双机公网验证）**：`PeerFound`/`Punching`/`NoiseHandshaking` 事件
+  原为 `if (S.view !== "create"/"progress") show("progress")`——创建方在**连接码页（create）或
+  首页（home）**查看时，对端一加入就会被强制顶到进度页，连接码页消失（用户实测
+  「切到其他页面再切回来看不到连接码」）。修复：四个事件统一为仅 `join/progress`（加入方
+  流程）视图才切进度页，创建方连接码页一律不被顶走。
+- **Connected 事件丢失兜底**：当 agent 已在运行且已 CONNECTED（UI 重启 / 事件在
+  `listen()` 订阅前发出）时，事件丢失导致 UI 只显示状态点、不切连接详情页。新增
+  `syncConnectedView(snap)`：GetStatus 为 CONNECTED 且处于 create/progress/join/home
+  视图时填充连接详情并切到连接页；boot（agent 已就绪分支）、waitReady（CONNECTED 分支）、
+  heartbeat（状态刚进入 CONNECTED）三处调用，绝不打扰 settings/friends/devices/diag 浏览。
+- **系统性 UI 排查结论**：静态核对 index.html 全部 115 个 id vs app.js 引用/事件绑定——
+  所有 `<button>` 均有绑定、无悬空 addEventListener / 悬空 `$()` 引用；Tauri bridge
+  9 个 command（agent_connect/ensure_agent_running/ipc_request/get_controller_default/
+  load_ui_config/save_controller_config/save_controller_url/get_controller_config/
+  read_log_files）与 app.js `invoke` 全部对应；`ActiveSession.status` 用 `wire()`（serde
+  SCREAMING_SNAKE）与 UI 英文常量匹配无误。
+
+Verified（真实双机公网，2026-09-02 实测）：
+
+- 主机（dev-c3cc517f2c459ea0）`[SESSION CREATE] code=721984` → 虚拟机
+  （dev-4da9787ba66c4de1）`[SESSION JOIN] found_session=true` → 双方
+  `PUNCH_EVIDENCE`（ICE punch 成功 rtt≈4.7ms）→ Noise 握手（initiator/responder）
+  → Overlay 配置（主机 10.88.0.1 / 虚拟机 10.88.0.2）→ 冒烟 smoke_ok →
+  **双方 `state=Connected` + `event=Connected` 广播** → 数据面持续双向加密传包 +
+  ICMP 经 Overlay 往返（iter 上万无错误）。公网 Controller
+  `https://controller.bpbpanel.cc.cd`（Cloudflare Tunnel）跨 NAT 全流程打通。
+- JS 契约测试（quick_code 39 / ui_error 47 / recent）全 PASS；`node --check` 通过；
+  dist\MeshLink.exe 重新编译打包（SHA256 F5052F7E...，10758144B）。
+
+
 ## 启动阻塞/卡死修复 + 启动失败退避（2026-09-02）
+
 
 Fixed:
 

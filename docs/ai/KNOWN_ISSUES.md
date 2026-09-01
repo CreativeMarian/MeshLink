@@ -13,6 +13,27 @@
 - Fast reconnect optimization
 
 
+## 双机公网 DirectLink 连通 + UI 流程顶走/事件丢失修复（2026-09-02）
+
+- **真实双机公网验证通过（原 PENDING_REAL_WORLD_VALIDATION 已达成）**：主机
+  `dev-c3cc517f2c459ea0` 创建 code=721984，虚拟机 `dev-4da9787ba66c4de1` 通过公网
+  Controller（Cloudflare Tunnel）JOIN found_session=true → ICE punch 成功 →
+  Noise 握手 → Overlay（10.88.0.1 / 10.88.0.2）→ smoke_ok → 双方 Connected +
+  数据面持续双向加密传包。**底层连接本身已完全打通**，剩余问题全部在 UI 展示层。
+- **UI 流程顶走（已修复，commit 8c4fa49）**：`PeerFound`/`Punching`/`NoiseHandshaking`
+  事件会把创建方从连接码页（create/home）顶到进度页——这就是用户实测「切到其他页面再
+  切回来看不到连接码」的根因。修复后仅加入方流程（join/progress 视图）才切进度页。
+- **Connected 事件丢失兜底（已修复）**：agent 已在运行且已 CONNECTED 时，Connected 事件
+  可能在 UI 订阅 `listen()` 前发出而丢失，导致 UI 只显示状态点、不切连接详情页。新增
+  `syncConnectedView` 在 boot / waitReady / heartbeat 三处兜底补齐连接详情视图。
+- **系统性 UI 排查结论**：全部按钮绑定完整、无悬空事件引用、Tauri 9 个 command 与
+  app.js invoke 对应完整、`ActiveSession.status`（SCREAMING_SNAKE）与 UI 常量匹配。
+- **遗留待办**：主机 Controller 依赖 Cloudflare Tunnel 且需保持 controller.exe 存活
+  （用户将自写 vbs 自启动，守护进程已按用户要求停用）；dist 打包前需关闭运行中的
+  MeshLink.exe（文件锁）；controller.db 曾因异常重启重建为空库导致旧设备凭据失效
+  （重启 MeshLink 触发幂等 register_device 即可重新注册）。
+
+
 ## 启动阻塞/卡死修复 + 启动失败退避（2026-09-02）
 
 - **虚拟机「打开特别卡 / 一直连接服务 / 点击设备卡死」根因**：`ensure_agent_running`

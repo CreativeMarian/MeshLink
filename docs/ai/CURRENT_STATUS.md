@@ -68,6 +68,17 @@ v0.1.0
     app.log；JS 自动重试指数退避 5s→10s→30s→60s；AGENT_START_FAILED 事件携带真实原因。
     实证：agent 缺失时 MeshLink 存活不卡、app.log 记录真实原因、不再无限 spawn。
 
+[x] 双机公网 DirectLink 连通（真实双机 + 公网 Controller 实测，2026-09-02）：
+    主机创建 code=721984 → 虚拟机 JOIN found_session=true → ICE punch 成功 → Noise 握手 →
+    Overlay（主机 10.88.0.1 / 虚拟机 10.88.0.2）→ smoke_ok → 双方 Connected + 数据面
+    双向加密传包（ICMP 往返）。公网 Controller（Cloudflare Tunnel）跨 NAT 全流程打通。
+
+[x] UI 流程顶走/事件丢失修复（commit 8c4fa49）：
+    PeerFound/Punching/NoiseHandshaking 不再顶走创建方连接码页（仅加入方 join/progress
+    视图切进度页）；新增 syncConnectedView 兜底（Connected 事件丢失时自动补连接详情页，
+    boot/waitReady/heartbeat 三处调用）。系统性 UI 排查：全部按钮绑定完整、Tauri 9 个
+    command 对应完整、ActiveSession.status（SCREAMING_SNAKE）与 UI 匹配无误。
+
 
 ## Current Development
 
