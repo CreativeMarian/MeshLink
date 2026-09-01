@@ -13,6 +13,25 @@
 - Fast reconnect optimization
 
 
+## 启动阻塞/卡死修复 + 启动失败退避（2026-09-02）
+
+- **虚拟机「打开特别卡 / 一直连接服务 / 点击设备卡死」根因**：`ensure_agent_running`
+  原同步阻塞 ~20s + 失败后高频反复 spawn 崩溃 agent → CPU 飙高。已修复：
+  启动后台化（立即返回 STARTING）、失败 30s 冷却、确定性失败不重试、JS 指数退避
+  （5s→10s→30s→60s）。实证：agent 缺失时 8s 后 MeshLink 存活不卡、app.log 记录真实
+  原因、不再无限 spawn。
+- **请检查虚拟机上的 `%LOCALAPPDATA%\MeshLink\logs\agent.log`**（agent 自身日志）与
+  `app.log`：若 agent.log 为空或 agent 未生成，多为 agent 未随 MeshLink 一起拷贝/被
+  杀软拦截/`mesh-agent.exe` 与 `MeshLink.exe` 版本不一致。诊断中心第一层健康 + 第二层
+  详情 + 第三层日志可查看失败原因。
+- **公网 Controller 连通性**：agent 能起但连不上公网 Controller（healthz 30s 超时 →
+  CONTROLLER_UNREACHABLE）时，UI 显示「网络服务未启动」+ 服务器行；请确认虚拟机可访问
+  `https://controller.bpbpanel.cc.cd`。
+- 若虚拟机上 `%LOCALAPPDATA%\MeshLink\ui\config.json` 存在旧 LAN 残留
+  （`192.168.x.x:18080`）会覆盖默认公网，请清理或改回公网地址（本机已清理并备份）。
+
+
+
 ## mesh-agent 启动风暴修复（2026-09-02）
 
 - **启动风暴根因已修**：`ensure_agent_running` 单例生命周期（Stopped/Starting/Running/

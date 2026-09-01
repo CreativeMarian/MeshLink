@@ -62,6 +62,12 @@ v0.1.0
     （正在准备连接... / 连接服务启动失败 [自动重试] [查看诊断]）。
     实证：25s 观察只有 1 个 mesh-agent 进程、app.log 仅 1 条「启动 mesh-agent」；关闭后 agent 清理干净。
 
+[x] 启动阻塞/卡死修复 + 启动失败退避（虚拟机实测）：
+    ensure_agent_running 后台化（立即返回 STARTING，不再同步阻塞 ~20s 导致 UI 卡死）；
+    启动失败 30s 冷却（next_spawn_at）+ 确定性失败（agent 缺失等）不重试 + 失败原因补记
+    app.log；JS 自动重试指数退避 5s→10s→30s→60s；AGENT_START_FAILED 事件携带真实原因。
+    实证：agent 缺失时 MeshLink 存活不卡、app.log 记录真实原因、不再无限 spawn。
+
 
 ## Current Development
 

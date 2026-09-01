@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::supervisor::{ProcessSupervisor, RuntimeDir};
 
@@ -63,6 +63,8 @@ pub struct IpcState {
     supervisor: ProcessSupervisor,
     /// 启动风暴修复：mesh-agent 生命周期单例锁（Starting 禁止重复 spawn）。
     agent_state: Mutex<AgentLifecycle>,
+    /// 启动失败冷却：agent 反复起不来时避免高频重启（指数退避，防虚拟机 CPU 飙高卡死）。
+    next_spawn_at: Mutex<Option<Instant>>,
 }
 
 impl IpcState {
@@ -77,6 +79,7 @@ impl IpcState {
             residue_checked: AtomicBool::new(false),
             supervisor: ProcessSupervisor::new(),
             agent_state: Mutex::new(AgentLifecycle::Stopped),
+            next_spawn_at: Mutex::new(None),
         }
     }
 }
@@ -151,14 +154,46 @@ pub fn ensure_agent_running(app: AppHandle, state: State<'_, IpcState>) -> Resul
             }
         }
     }
-    // 本调用者负责真正启动（可能耗时数秒；其他并发调用者见 Starting 已返回）。
-    let result = do_agent_connect(&app, &state);
-    *state.agent_state.lock().unwrap() = if result.is_ok() {
-        AgentLifecycle::Running
-    } else {
-        AgentLifecycle::Failed
-    };
-    result
+    // 后台线程真正启动 agent：**立即返回**，不阻塞 UI invoke（修复同步 20+s 阻塞导致
+    // 的界面卡死）。启动完成经心跳 GetStatus（成功）或 AGENT_START_FAILED 事件（失败）感知。
+    let app2 = app.clone();
+    std::thread::Builder::new()
+        .name("meshlink-agent-start".into())
+        .spawn(move || {
+            let st = app2.state::<IpcState>();
+            let result = do_agent_connect(&app2, st.inner());
+            let mut gate = st.agent_state.lock().unwrap();
+            *gate = if result.is_ok() { AgentLifecycle::Running } else { AgentLifecycle::Failed };
+            drop(gate);
+            match result {
+                Ok(_) => {
+                    // 成功：IPC 线程已建立（connected=true）；发事件让 UI 立即刷新（心跳兜底）。
+                    let _ = app2.emit(
+                        "agent-event",
+                        &Event::ControllerConnected {
+                            controller: effective_controller_url().unwrap_or_default(),
+                            device_id: String::new(),
+                        },
+                    );
+                }
+                Err(e) => {
+                    // 失败：冷却 30s（防反复 spawn 崩溃 agent 导致 CPU 飙高）+ 真实原因事件。
+                    *st.next_spawn_at.lock().unwrap() = Some(Instant::now() + Duration::from_secs(30));
+                    let _ = app2.emit(
+                        "agent-event",
+                        &Event::Error {
+                            code: "AGENT_START_FAILED".into(),
+                            message: format!("连接服务启动失败：{e}"),
+                        },
+                    );
+                }
+            }
+        })
+        .map_err(|_| "后台启动线程创建失败".to_string())?;
+    Ok(IpcReply::ok(serde_json::json!({
+        "state": "STARTING",
+        "user_facing": "正在准备连接...",
+    })))
 }
 
 /// 单例启动决策（启动风暴修复核心规则，独立成函数便于单测）：
@@ -182,6 +217,14 @@ fn lifecycle_can_start(state: AgentLifecycle) -> LifecycleDecision {
 
 /// 真正启动 mesh-agent 并等待握手（最多 5s）：探测/拉起/连接/读状态。
 fn do_agent_connect(app: &AppHandle, state: &IpcState) -> Result<IpcReply, String> {
+    // 启动失败冷却（30s）：agent 反复起不来时避免高频 spawn 崩溃进程（防 CPU 飙高卡死）。
+    if let Some(t) = *state.next_spawn_at.lock().unwrap() {
+        if Instant::now() < t {
+            let wait = t.saturating_duration_since(Instant::now()).as_secs() + 1;
+            return Err(format!("后台服务启动失败，约 {wait} 秒后自动重试（请查看诊断中心 agent.log）"));
+        }
+    }
+
     // 异常退出残留检测（仅一次）：终止上次 MeshLink 遗留的 agent/controller + 清空 runtime。
     if !state.residue_checked.swap(true, Ordering::AcqRel) {
         let killed = state.supervisor.detect_and_clean_residue();
@@ -241,6 +284,7 @@ fn do_agent_connect(app: &AppHandle, state: &IpcState) -> Result<IpcReply, Strin
                                         None => wait_err.clone(),
                                     }
                                 };
+                                append_log("app.log", &format!("[MeshLink] mesh-agent 未就绪：{reason}"));
                                 // 回收本进程拉起的 agent，下一轮重试。
                                 if let Some(mut ch) = state.agent.lock().unwrap().take() {
                                     let _ = ch.kill();
@@ -252,6 +296,12 @@ fn do_agent_connect(app: &AppHandle, state: &IpcState) -> Result<IpcReply, Strin
                     }
                     Err(e) => {
                         last_err = format!("后台服务启动失败：{e}");
+                        // 失败原因落 app.log（诊断中心可查；agent 缺失时 spawn_agent_process
+                        // 不会写日志，这里补记）。
+                        append_log("app.log", &format!("[MeshLink] mesh-agent 启动失败：{e}"));
+                        // 确定性失败（未找到 agent / exe 路径错误）重试无意义：立即失败，
+                        // 交由 30s 冷却后再试；只有「spawn 成功但 pipe 未就绪」才在本轮重试。
+                        break;
                     }
                 }
             }

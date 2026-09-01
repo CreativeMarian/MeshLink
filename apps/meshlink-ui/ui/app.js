@@ -59,6 +59,7 @@ const S = {
   connMeta: { server: "", latency: "" }, // 首页顶部：服务器 + 延迟
   reconnectTimer: null,
   lastAutoRetry: 0,  // 启动风暴修复：自动重试节流（5s 内只调一次 ensure_agent_running）
+  retryBackoff: 0,   // 启动风暴修复：自动重试指数退避（5s→10s→30s→60s 上限，成功后归零）
 };
 
 /* ---------------- 工具 ---------------- */
@@ -442,6 +443,15 @@ function handleEvent(ev) {
 
 function handleErrorEvent(d) {
   const code = d.code || "UNKNOWN";
+  // 后台服务启动失败（agent 起不来）：显示真实原因（进程退出码 + agent.log 尾部），
+  // 不无限反复重启（Rust 侧已做 30s 冷却 + 单例 gate）。
+  if (code === "AGENT_START_FAILED") {
+    setConnState("ERROR");
+    showReconnect();
+    renderStatus({ state: "FAILED", user_facing: "连接服务启动失败" });
+    showError($("home-error"), code, d.message || "连接服务启动失败");
+    return;
+  }
   // 后台服务断开：显示「连接断开 [重新连接]」+ 自动重连（P0-5/P2-2）。
   if (code === "AGENT_STOPPED") {
     S.ctlErr = false;
@@ -582,10 +592,13 @@ async function reconnectNow() {
 }
 
 // 启动风暴修复：自动重试统一入口（心跳/恢复共用）。ensure_agent_running 单例——
-// Starting 返回"正在准备连接..."不重复 spawn；Failed 才会真正重启。节流 5s。
+// Starting 返回"正在准备连接..."不重复 spawn；Failed 才会真正重启。指数退避
+// 5s→10s→30s→60s（防 agent 反复起不来时高频重启导致 CPU 飙高/UI 卡死），成功归零。
+const AGENT_RETRY_BACKOFF = [5000, 10000, 30000, 60000];
 async function autoRetryAgent() {
+  const idx = Math.min(S.retryBackoff || 0, AGENT_RETRY_BACKOFF.length - 1);
   const now = Date.now();
-  if (now - (S.lastAutoRetry || 0) < 5000) return;
+  if (now - (S.lastAutoRetry || 0) < AGENT_RETRY_BACKOFF[idx]) return;
   S.lastAutoRetry = now;
   try {
     const r = await invoke("ensure_agent_running");
@@ -594,18 +607,22 @@ async function autoRetryAgent() {
       if (snap.state === "STARTING") {
         renderStatus({ state: "STARTING", user_facing: "正在准备连接..." });
       } else if (snap.state === "READY" || snap.state === "CONNECTED") {
+        S.retryBackoff = 0;
         hideReconnect();
         renderStatus(snap);
         loadControllerStatus();
         refreshFriends();
         refreshRecent();
       } else {
+        S.retryBackoff = Math.min((S.retryBackoff || 0) + 1, AGENT_RETRY_BACKOFF.length - 1);
         showReconnect();
       }
     } else {
+      S.retryBackoff = Math.min((S.retryBackoff || 0) + 1, AGENT_RETRY_BACKOFF.length - 1);
       showReconnect();
     }
   } catch (e) {
+    S.retryBackoff = Math.min((S.retryBackoff || 0) + 1, AGENT_RETRY_BACKOFF.length - 1);
     showReconnect();
   }
 }

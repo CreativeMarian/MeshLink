@@ -1,6 +1,38 @@
 # MeshLink Changelog
 
 
+## 启动阻塞/卡死修复 + 启动失败退避（2026-09-02）
+
+Fixed:
+
+- **UI 卡死根因（虚拟机实测）**：`ensure_agent_running` 原为同步 Tauri command，agent
+  起不来时 `do_agent_connect` 阻塞约 20+s（3 次 × spawn+等 pipe 5s）；`boot()` 的
+  `await invoke("ensure_agent_running")` 挂起阻塞，且失败后心跳每 5s 反复触发重启，
+  反复 spawn 崩溃的 agent → CPU 飙高 → 整个 UI 卡死（点击设备等操作无响应）。
+- **启动流程后台化**：`ensure_agent_running` 改为单例 gate 后**立即返回 STARTING**，
+  真正启动放到独立后台线程执行（`app.state::<IpcState>()` 重新获取状态，无 lifetime
+  依赖）；启动成功经 IPC 线程建立 + ControllerConnected 事件感知，失败经
+  `AGENT_START_FAILED` 事件携带真实原因（进程退出码 + agent.log 尾部）。
+- **启动失败 30s 冷却**：`IpcState.next_spawn_at` 记录冷却截止；agent 反复起不来时
+  `do_agent_connect` 在冷却期内直接返回「后台服务启动失败，约 N 秒后自动重试（请查看
+  诊断中心 agent.log）」，不再高频 spawn 崩溃进程。
+- **确定性失败不重试**：`spawn_agent_process` 返回 Err（未找到 agent / exe 路径错误）
+  直接 break（重试无意义），只有「spawn 成功但 pipe 未就绪」才在本轮重试；失败原因
+  补记 app.log（此前 agent 缺失时 spawn_agent_process 在写日志前返回，诊断中心空白）。
+- **JS 自动重试指数退避**：`AGENT_RETRY_BACKOFF = [5s,10s,30s,60s]`，成功归零；心跳
+  失败分支走 `autoRetryAgent`，不再每 5s 高频触发。
+- **UI 失败文案与诊断**：`handleErrorEvent` 新增 `AGENT_START_FAILED` 分支——显示
+  「连接服务启动失败」+ 真实原因（含 agent.log 尾部）+ [重新连接]。
+
+Added:
+
+- 实证验证（本机真实 dist 二进制）：
+  - agent 缺失路径：8s 后 MeshLink 存活不卡死，app.log 记录「mesh-agent 启动失败：未找到
+    后台服务」；不再无限 spawn。
+  - 正常路径：1 个 mesh-agent、1 条启动日志、默认公网 Controller、关闭后清理为 0。
+- meshlink-ui 单测 9 项、JS 契约（47/39/recent）全 PASS。
+
+
 ## mesh-agent 启动风暴修复（2026-09-02）
 
 Fixed:
