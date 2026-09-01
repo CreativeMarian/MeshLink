@@ -1,6 +1,20 @@
 # MeshLink Changelog
 
 
+## Public Controller 架构设计（2026-09-01，设计文档，未大规模编码）
+
+Added:
+
+- 新增 `docs/adr/ADR-005-public-controller-mode.md`：基于真实网络环境（运营商 CGNAT，
+  公网出口 112.91.163.213、无公网入口）确定跨公网联机方案——部署**双方都能访问的
+  Public Controller**，只做注册/Session/信令；数据面仍 Agent↔Agent P2P 直连。
+- 明确 Local Controller 仅用于开发测试；Public Controller 支持原生 HTTPS
+  （--tls-cert/--tls-key）或 TLS 终结层（Cloudflare Tunnel/Nginx + --trust-proxy）。
+- UI 保持用户化：首页只有【创建连接】/【加入连接】，不暴露 Controller 技术细节。
+- `dist/README.md` 增加「公网 Controller 部署」章节（部署方式/客户端配置/架构说明）。
+- 不改变：Device Identity / Noise IK / Friend System / Recent Connection / P2P 数据面。
+
+
 ## v0.1.0
 
 Added:

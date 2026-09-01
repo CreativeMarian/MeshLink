@@ -41,6 +41,10 @@ v0.1.0
     REMOTE=已有地址不拉起本机；启动日志 [Controller Start] Mode/Listen；UI 用户化：首页【创建连接/加入连接】、
     设置页【连接设置】创建/加入二选一、服务器地址进高级设置隐藏；术语清理 Controller/SESSION/PeerFound）
 
+[x] Public Controller 架构设计（ADR-005：CGNAT 环境下跨公网联机改用公网 Controller；Local 仅开发测试；
+    Controller 只做注册/Session/信令，数据面仍 Agent↔Agent P2P；UI 保持创建/加入两入口；
+    dist README 增加公网部署架构说明）
+
 
 ## Current Development
 
