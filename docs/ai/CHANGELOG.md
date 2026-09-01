@@ -14,6 +14,31 @@ Added:
 - N2N + Supernode backup path（M1-2）
 
 
+## Controller 生命周期三模式 + UI 用户化（2026-09-01）
+
+Changed:
+
+- Controller 生命周期扩展为**三种模式**（不重构 Controller 架构，仅 MeshLink 启动参数策略）：
+  - **LOCAL（创建连接 / 本机）**：自动拉起 controller.exe；有 RFC1918 局域网地址时监听
+    `<私网IP>:18080` + `-allow-lan-plaintext`（同一局域网其他设备可加入），无则 `127.0.0.1:18080`。
+  - **LAN（局域网）**：监听本机 RFC1918 IPv4 + `-allow-lan-plaintext`（显式局域网共享）。
+  - **REMOTE（加入连接 / 已有地址）**：只连接「高级设置 → 服务器地址」填写的地址，
+    **绝不**自动拉起本机 controller.exe（双机联机必须此项，双方指向同一共享 Controller）。
+- Controller 启动日志：`[Controller Start] Mode: LOCAL|LAN|REMOTE Listen: <addr>`。
+- 新增 `detect_lan_ipv4()`（枚举 RFC1918 非回环 IPv4，取第一个）；`local-ip-address` 依赖。
+- `save_controller_config` 支持 lan 模式（落盘 lan_controller_url）；`get_controller_config`
+  返回 `lan_ip` 字段；`effective_controller_url` 三态。
+- **UI 用户化（普通用户不暴露技术术语）**：
+  - 首页只保留两大入口：【创建连接】（"让其他设备加入你的网络"）+【加入连接】
+    （"输入连接码，加入其他设备的网络"）；邀请好友移到好友页。
+  - 设置页更名【连接设置】：○创建连接（我的电脑作为连接发起方）/○加入连接
+    （我的电脑加入别人创建的网络）；服务器地址输入框收进「高级设置」折叠区默认隐藏。
+  - 状态文案用户化：「网络服务未启动 / 等待创建连接」替代「未连接 Controller」；
+    首页横幅与错误提示不再出现 Controller/SESSION/PeerFound 等术语。
+- 单元测试：`controller_listen_spec`（LAN 必带 allow-lan-plaintext；local 自动局域网；端口固定 18080）。
+- Release 冒烟新增 `release_lan_controller_shared_topology`：Controller 监听本机 RFC1918 +
+  `-allow-lan-plaintext`，双 Agent 指向 `http://<LAN_IP>:port` → 同一 code 双端 PeerFound；公网明文拒启。
+
 ## M1-2 N2N + Supernode（2026-09-01）
 
 Added:

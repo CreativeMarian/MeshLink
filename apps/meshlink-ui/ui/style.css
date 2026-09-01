@@ -221,8 +221,13 @@ html, body {
   border-radius: var(--radius); padding: 12px 18px;
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 }
-.home-actions { grid-template-columns: 1fr 1fr 1fr; }
-.home-actions .btn { padding: 12px 10px; font-size: 13.5px; }
+.home-actions { grid-template-columns: 1fr 1fr; gap: 14px; }
+.home-actions .btn { padding: 14px 10px; font-size: 15px; width: 100%; }
+.home-action-card { display: flex; flex-direction: column; gap: 6px; }
+.home-action-desc { margin: 0; font-size: 12px; color: var(--text-2); text-align: center; }
+.adv-settings { margin-top: 12px; }
+.adv-settings summary { cursor: pointer; font-size: 13px; color: var(--text-2); margin-bottom: 8px; }
+.adv-settings[open] summary { margin-bottom: 10px; }
 .friend-mini { margin-top: 20px; }
 .section-title-sm { font-size: 13px; color: var(--text-2); margin-bottom: 8px; }
 .friend-mini-list { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 0; }

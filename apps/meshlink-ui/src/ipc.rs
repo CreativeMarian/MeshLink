@@ -17,6 +17,10 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::supervisor::{ProcessSupervisor, RuntimeDir};
 
+/// 全局唯一默认 Controller 端口（与 Go DefaultControllerPort / mesh-ipc URL 一致）。
+/// 任何改动需同步三端（Go main.go / mesh-ipc DEFAULT_CONTROLLER_URL / 本常量）。
+const DEFAULT_CONTROLLER_PORT: &str = "18080";
+
 /// UI → IPC 线程的任务。
 enum IpcJob {
     Request {
@@ -91,10 +95,11 @@ impl IpcReply {
 
 /// 启动时连接 Agent：先探测已有管道（服务已运行形态），失败则拉起 mesh-agent.exe。
 /// M1-1.5：首次连接前检测并清理 runtime 残留。
-/// 双机架构调整（ADR-004 延续）：
+/// Controller 生命周期（用户规格：本机 / 局域网 / 远程三态）：
 /// - 无 Controller 配置 → 不拉起 controller / agent，返回 NOT_CONFIGURED（UI 显示「未配置 Controller」）；
-/// - 仅当用户显式选择「本机 Controller」模式且地址为 dev loopback 时，才允许本进程拉起本地 controller.exe；
-/// - 「已有 Controller 地址」模式（含远程/局域网共享 Controller）绝不自动拉起本机 controller。
+/// - local（本机）：controller.exe -addr 127.0.0.1:18080（仅本机访问，默认安全）；
+/// - lan（局域网）：controller.exe -addr <RFC1918 私网IP>:18080 -allow-lan-plaintext（共享给局域网其他设备）；
+/// - remote（已有）：绝不自动拉起本机 controller.exe，只连接用户配置的 URL。
 #[tauri::command]
 pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcReply, String> {
     if state.connected.load(Ordering::Acquire) {
@@ -114,15 +119,17 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
         return Ok(IpcReply::ok(serde_json::json!({
             "state": "NOT_CONFIGURED",
             "configured": false,
-            "user_facing": "未配置 Controller",
+            "user_facing": "等待创建连接",
             "controller_url": "",
         })));
     };
 
-    // 是否本机 Controller 模式（显式选择后，MeshLink 才负责拉起 controller.exe）。
-    let local_mode = controller_mode() == "local";
-    let dev_mode = local_mode && is_dev_controller(&controller_url);    if dev_mode && !controller_healthy(&controller_url) {
-        spawn_dev_controller(&state)?;
+    // 本机 / 局域网模式：MeshLink 负责拉起 controller.exe（按模式选择监听方式）。
+    // 远程模式（remote）：只连接已有 Controller，绝不自动拉起本机。
+    let mode = controller_mode();
+    let manage_controller = mode == "local" || mode == "lan";
+    if manage_controller && !controller_healthy(&controller_url) {
+        spawn_controller(&state, &mode)?;
     }
 
     let pipe =
@@ -140,15 +147,15 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
     };
 
     start_ipc_loop(state.inner(), app, client);
-    // M1-2：DEV 模式拉起本机 n2n-supernode 并注册到 Controller Supernode Registry
+    // M1-2：本机/局域网模式拉起本机 n2n-supernode 并注册到 Controller Supernode Registry
     // （Agent 持有 credential；UI 不触碰密钥。注册失败不阻断首页 READY）。
-    if dev_mode {
+    if manage_controller {
         let _ = spawn_dev_supernode_and_register(state.inner());
     }
     send_status(&state)
 }
 
-/// 当前 Controller 模式：`local` | `remote` | `""`（未配置）。
+/// 当前 Controller 模式：`local` | `lan` | `remote` | `""`（未配置）。
 /// 环境变量 MESHLINK_CONTROLLER_URL 视为显式指定既有地址（remote 语义，不自动拉起本机）。
 fn controller_mode() -> String {
     if std::env::var("MESHLINK_CONTROLLER_URL").map(|v| !v.trim().is_empty()).unwrap_or(false) {
@@ -157,13 +164,14 @@ fn controller_mode() -> String {
     load_ui_config()
         .ok()
         .and_then(|v| v.get("controller_mode").and_then(|x| x.as_str()).map(String::from))
-        .filter(|m| m == "local" || m == "remote")
+        .filter(|m| m == "local" || m == "lan" || m == "remote")
         .unwrap_or_default()
 }
 
 /// 生效 Controller 地址：
 /// - 环境变量 `MESHLINK_CONTROLLER_URL` 最高优先级（测试/运维显式覆盖）；
-/// - 否则读 UI 配置：`local` 模式 → 单一默认；`remote` 模式 → 已保存地址；
+/// - 否则读 UI 配置：`local` → 本机（有局域网地址则自动启用局域网访问，否则 127.0.0.1）；
+///   `lan` → http://<本机RFC1918私网IP>:18080；`remote` → 已保存地址；
 /// - 无配置（含旧配置仅 controller_url 无 mode）→ 按已有地址处理；完全无地址 → None（未配置）。
 fn effective_controller_url() -> Option<String> {
     if let Ok(url) = std::env::var("MESHLINK_CONTROLLER_URL") {
@@ -176,7 +184,8 @@ fn effective_controller_url() -> Option<String> {
     let mode = cfg.get("controller_mode").and_then(|x| x.as_str()).unwrap_or("");
     let saved = cfg.get("controller_url").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
     match mode {
-        "local" => Some(DEFAULT_CONTROLLER_URL.to_string()),
+        "local" => Some(local_controller_url()),
+        "lan" => Some(lan_controller_url()),
         "remote" if !saved.is_empty() => Some(saved),
         // 旧配置：只有 controller_url、无 controller_mode → 按 remote 处理（不自动拉起本机）。
         "" if !saved.is_empty() => Some(saved),
@@ -184,17 +193,43 @@ fn effective_controller_url() -> Option<String> {
     }
 }
 
-/// 是否 DEV Controller（http + localhost/127.0.0.1）——此类才允许本进程拉起。
-fn is_dev_controller(url: &str) -> bool {
-    let Some(rest) = url.trim_end_matches('/').split_once("://") else {
-        return false;
-    };
-    let (scheme, rest) = rest;
-    if !scheme.eq_ignore_ascii_case("http") {
-        return false;
+/// 本机（创建连接/发起方）Controller 地址：有 RFC1918 私网地址则自动启用局域网访问
+/// （供其他设备加入），否则回退 127.0.0.1。
+fn local_controller_url() -> String {
+    match detect_lan_ipv4() {
+        Some(ip) => format!("http://{ip}:{}", DEFAULT_CONTROLLER_PORT),
+        None => DEFAULT_CONTROLLER_URL.to_string(),
     }
-    let host = rest.split(['/', ':']).next().unwrap_or("").to_ascii_lowercase();
-    host == "localhost" || host == "127.0.0.1"
+}
+
+/// 局域网 Controller 地址：http://<本机 RFC1918 IPv4>:18080。
+/// 若无可用私网地址（异常环境），回退到默认 127.0.0.1 并在日志中告警。
+fn lan_controller_url() -> String {
+    let ip = detect_lan_ipv4().unwrap_or_else(|| {
+        eprintln!("[MeshLink] 未找到本机 RFC1918 IPv4，局域网 Controller 回退监听 127.0.0.1");
+        "127.0.0.1".to_string()
+    });
+    format!("http://{ip}:{}", DEFAULT_CONTROLLER_PORT)
+}
+
+/// 自动获取本机 RFC1918 IPv4（局域网访问用）。遍历所有 up 接口，
+/// 选一个非回环的私网 IPv4（10/8、172.16/12、192.168/16）；无则 None。
+fn detect_lan_ipv4() -> Option<String> {
+    let list = local_ip_address::list_afinet_netifas().ok()?;
+    let mut candidates: Vec<String> = Vec::new();
+    for (_name, ip) in list {
+        let ip = ip.to_string();
+        let host = ip.split('%').next().unwrap_or(&ip);
+        if host
+            .parse::<std::net::Ipv4Addr>()
+            .map(|a| a.is_private() && !a.is_loopback())
+            .unwrap_or(false)
+        {
+            candidates.push(host.to_string());
+        }
+    }
+    // 优先级：取第一个私网 IPv4。多网卡时可在设置页高级选项手动指定（未来增强）。
+    candidates.first().cloned()
 }
 
 /// healthz 探测（复用 controller-client 白名单与请求路径；短超时）。
@@ -205,16 +240,24 @@ fn controller_healthy(url: &str) -> bool {
     client.healthz().is_ok()
 }
 
-/// 拉起 DEV controller.exe（无参 → 默认监听 127.0.0.1:18080；所有权记录到 runtime）。
-fn spawn_dev_controller(state: &IpcState) -> Result<(), String> {
+/// 拉起 controller.exe（按 Controller 模式选择监听方式；所有权记录到 runtime）。
+/// - local：-addr 127.0.0.1:18080（仅本机访问，默认安全模式；有局域网地址则自动启用局域网监听）
+/// - lan：-addr <本机RFC1918私网IP>:18080 -allow-lan-plaintext（共享给局域网其他设备）
+/// remote 模式不会走到这里（不拉起本机 controller）。
+/// 日志：`[Controller Start] Mode: LOCAL/LAN Listen: <addr>`（用户规格六）。
+fn spawn_controller(state: &IpcState, mode: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("exe 路径失败：{e}"))?;
     let dir = exe.parent().ok_or("exe 目录解析失败")?;
     let controller = dir.join("controller.exe");
     if !controller.exists() {
         // 未随包携带时（如纯 dev 环境）不阻断：Agent 会以 CONTROLLER_UNREACHABLE 呈现。
-        eprintln!("[MeshLink] 未找到 DEV controller.exe（{}），跳过自动拉起", controller.display());
+        eprintln!("[MeshLink] 未找到 controller.exe（{}），跳过自动拉起", controller.display());
         return Ok(());
     }
+
+    // 监听地址与参数：local = 本机（有局域网地址自动启用局域网监听）；lan = 显式局域网。
+    let (listen_addr, allow_lan, mode_label) = controller_listen_spec(mode);
+
     let log_path = state
         .supervisor
         .runtime
@@ -228,24 +271,84 @@ fn spawn_dev_controller(state: &IpcState) -> Result<(), String> {
         .map(Stdio::from)
         .unwrap_or(Stdio::null());
     let mut cmd = StdCommand::new(&controller);
+    cmd.arg("-addr").arg(&listen_addr);
+    if allow_lan {
+        cmd.arg("-allow-lan-plaintext");
+    }
     cmd.stdout(Stdio::null()).stderr(stderr);
+
+    // 用户规格六：[Controller Start] 日志（含模式与监听地址）。
+    eprintln!("[Controller Start] Mode: {mode_label} Listen: {listen_addr}");
+
     let child = state
         .supervisor
         .spawn_managed("controller", "controller.exe", &mut cmd)
-        .map_err(|e| format!("DEV controller 启动失败：{e}"))?;
+        .map_err(|e| format!("controller 启动失败：{e}"))?;
     *state.controller.lock().unwrap() = Some(child);
 
     // 等待 healthz 就绪（最多 ~10s；controller 无参启动很快）。
+    let health_url = format!("http://{listen_addr}");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        // 本机 Controller 模式：地址固定为单一默认（DEFAULT_CONTROLLER_URL）。
-        if controller_healthy(DEFAULT_CONTROLLER_URL) {
+        if controller_healthy(&health_url) {
             return Ok(());
         }
         if std::time::Instant::now() > deadline {
-            return Err("DEV controller 启动超时（healthz 未就绪）".into());
+            return Err(format!("controller 启动超时（healthz 未就绪）：{health_url}"));
         }
         std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// 根据 Controller 模式计算监听规格（listen_addr, allow_lan_plaintext, mode_label）。
+/// - `lan`：必须监听局域网（有 RFC1918 地址则用之，否则回退 127.0.0.1）；
+/// - `local`：有局域网地址则自动启用局域网监听（供其他设备加入），否则 127.0.0.1。
+/// 纯函数（不触碰 I/O），供单测锁定启动参数策略。
+fn controller_listen_spec(mode: &str) -> (String, bool, &'static str) {
+    let lan_ip = detect_lan_ipv4();
+    match mode {
+        "lan" => {
+            let ip = lan_ip.unwrap_or_else(|| "127.0.0.1".to_string());
+            (format!("{ip}:{DEFAULT_CONTROLLER_PORT}"), true, "LAN")
+        }
+        _ => match lan_ip {
+            Some(ip) => (format!("{ip}:{DEFAULT_CONTROLLER_PORT}"), true, "LOCAL"),
+            None => (format!("127.0.0.1:{DEFAULT_CONTROLLER_PORT}"), false, "LOCAL"),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_listen_spec_lan_requires_lan_plaintext() {
+        // lan 模式：必然带 -allow-lan-plaintext；无私网地址时回退 127.0.0.1。
+        let (addr, allow_lan, label) = controller_listen_spec("lan");
+        assert!(allow_lan, "lan 模式必须启用局域网明文");
+        assert_eq!(label, "LAN");
+        assert!(!addr.starts_with("http"), "addr 应是不带 scheme 的 host:port: {addr}");
+        assert!(addr.ends_with(":18080"), "端口固定 18080: {addr}");
+    }
+
+    #[test]
+    fn controller_listen_spec_local_auto_lan() {
+        // local 模式：监听地址要么是私网 IPv4（自动启用局域网），要么是 127.0.0.1（仅本机）。
+        let (addr, _allow_lan, label) = controller_listen_spec("local");
+        assert_eq!(label, "LOCAL");
+        let host = addr.split(':').next().unwrap();
+        if host != "127.0.0.1" {
+            assert!(
+                host.parse::<std::net::Ipv4Addr>().map(|a| a.is_private()).unwrap_or(false),
+                "local 有局域网地址时应为私网 IPv4: {addr}"
+            );
+        }
+    }
+
+    #[test]
+    fn controller_listen_spec_port_is_canonical() {
+        assert_eq!(DEFAULT_CONTROLLER_PORT, "18080");
     }
 }
 
@@ -362,26 +465,35 @@ pub fn load_ui_config() -> Result<serde_json::Value, String> {
 }
 
 /// 保存 Controller 配置到普通配置（设置页；下次启动 spawn 时作为默认值）。
-/// 双机架构调整：显式记录模式 `local`（本机 Controller，MeshLink 负责拉起）或
-/// `remote`（已有 Controller 地址，绝不自动拉起本机）。仅允许合法地址
-/// （生产 HTTPS / DEV localhost / RFC1918 私网）；公网明文 HTTP 拒绝。
+/// 三种模式（用户规格一/二）：
+/// - `local`（本机/创建连接发起方）：有局域网地址则自动启用局域网监听，否则 127.0.0.1；
+/// - `lan`（局域网）：-addr <本机RFC1918私网IP>:18080 -allow-lan-plaintext（共享给其他设备）；
+/// - `remote`（加入连接/已有地址）：绝不自动拉起本机 controller，只连接已保存地址。
+/// 仅允许合法地址（生产 HTTPS / DEV localhost / RFC1918 私网）；公网明文 HTTP 拒绝。
 #[tauri::command]
 pub fn save_controller_config(mode: String, url: String) -> Result<serde_json::Value, String> {
     let mode = mode.trim().to_string();
-    if mode != "local" && mode != "remote" {
-        return Err("Controller 模式必须是 local（本机）或 remote（已有地址）。".into());
+    if mode != "local" && mode != "lan" && mode != "remote" {
+        return Err("Controller 模式必须是 local（本机）、lan（局域网）或 remote（已有地址）。".into());
     }
     let mut cfg = serde_json::json!({ "controller_mode": mode });
-    if mode == "remote" {
-        let url = url.trim().trim_end_matches('/').to_string();
-        if url.is_empty() {
-            return Err("请输入已有 Controller 地址。".into());
+    match mode.as_str() {
+        "remote" => {
+            let url = url.trim().trim_end_matches('/').to_string();
+            if url.is_empty() {
+                return Err("请输入已有 Controller 地址。".into());
+            }
+            validate_controller_url(&url).map_err(|e| e)?;
+            cfg["controller_url"] = serde_json::json!(url);
         }
-        validate_controller_url(&url).map_err(|e| e)?;
-        cfg["controller_url"] = serde_json::json!(url);
-    } else {
-        // local 模式：地址固定为单一默认，不落盘用户地址（避免与远程地址混淆）。
-        cfg["controller_url"] = serde_json::json!(DEFAULT_CONTROLLER_URL);
+        "lan" => {
+            // 局域网：地址由本机私网 IP 推导，不落盘用户输入（避免不一致）。
+            cfg["controller_url"] = serde_json::json!(lan_controller_url());
+        }
+        _ => {
+            // local：本机（自动启用局域网访问优先）。
+            cfg["controller_url"] = serde_json::json!(local_controller_url());
+        }
     }
     let path = ui_config_path();
     if let Some(dir) = path.parent() {
@@ -398,18 +510,20 @@ pub fn save_controller_url(url: String) -> Result<serde_json::Value, String> {
     save_controller_config("remote".into(), url)
 }
 
-/// 读取当前 Controller 配置（模式 + 地址 + 生效地址 + 是否已配置）。
+/// 读取当前 Controller 配置（模式 + 地址 + 生效地址 + 是否已配置 + 本机局域网地址）。
 #[tauri::command]
 pub fn get_controller_config() -> Result<serde_json::Value, String> {
     let cfg = load_ui_config().ok().unwrap_or_else(|| serde_json::json!({}));
     let mode = cfg.get("controller_mode").and_then(|x| x.as_str()).unwrap_or("").to_string();
     let url = cfg.get("controller_url").and_then(|x| x.as_str()).unwrap_or("").to_string();
     let effective = effective_controller_url().unwrap_or_default();
+    let lan_ip = detect_lan_ipv4().unwrap_or_default();
     Ok(serde_json::json!({
         "configured": !effective.is_empty(),
         "mode": mode,
         "controller_url": url,
         "effective_url": effective,
+        "lan_ip": lan_ip,
     }))
 }
 

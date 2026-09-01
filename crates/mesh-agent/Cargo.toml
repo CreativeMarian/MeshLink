@@ -31,3 +31,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+# 双机 LAN 冒烟：探测本机 RFC1918 IPv4（与 meshlink-ui 的 local-ip-address 同源，版本走 lock）
+local-ip-address = "0.6"

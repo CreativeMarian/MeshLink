@@ -80,9 +80,23 @@ fn wait_connect(name: &str, timeout: Duration) -> PipeClient {
 fn spawn_controller(ctrl_exe: &std::path::Path, tmp: &std::path::Path, tag: &str) -> (String, Guard) {
     let port = free_port();
     let addr = format!("127.0.0.1:{port}");
-    let child = ProcessCommand::new(ctrl_exe)
-        .arg("-addr")
-        .arg(&addr)
+    spawn_controller_at(ctrl_exe, tmp, tag, &addr, false)
+}
+
+/// 按指定监听地址启动 Controller；`allow_lan` 时追加 `-allow-lan-plaintext`（等价"局域网 Controller"）。
+fn spawn_controller_at(
+    ctrl_exe: &std::path::Path,
+    tmp: &std::path::Path,
+    tag: &str,
+    addr: &str,
+    allow_lan: bool,
+) -> (String, Guard) {
+    let mut cmd = ProcessCommand::new(ctrl_exe);
+    cmd.arg("-addr").arg(addr);
+    if allow_lan {
+        cmd.arg("-allow-lan-plaintext");
+    }
+    let child = cmd
         .arg("-db")
         .arg(tmp.join(format!("ctrl-{tag}.db")))
         .stdout(Stdio::null())
@@ -266,4 +280,115 @@ fn release_two_machine_separate_controllers_and_shared_controller() {
     eprintln!("[2M] 安全约束仍生效：公网明文监听被 controller 拒绝启动");
 
     tracing::info!("release 双机冒烟 PASS：独立 Controller 复现 SESSION_CODE_INVALID；共享 Controller 同一 code PeerFound；公网明文拒绝");
+}
+
+/// 局域网 Controller（用户规格五）：Controller 监听本机 RFC1918 地址 + `-allow-lan-plaintext`，
+/// 两台 Agent 都填 `http://<LAN_IP>:port` → A 创建 code、B 输入 code → PeerFound。
+/// 等价"机器A 选择局域网 Controller、机器B 选择已有 Controller 地址"的双机流程。
+#[test]
+#[ignore = "release 局域网双机冒烟：需先构建并打包 dist 后显式运行"]
+fn release_lan_controller_shared_topology() {
+    mesh_common::logging::init_logging("info,agent=debug", false);
+
+    let dist = dist_dir();
+    let ctrl_exe = dist.join("controller.exe");
+    let agent_exe = dist.join("mesh-agent.exe");
+    assert!(ctrl_exe.exists(), "缺少 dist/controller.exe");
+    assert!(agent_exe.exists(), "缺少 dist/mesh-agent.exe");
+
+    // 探测本机 RFC1918 IPv4（与 MeshLink UI 的 detect_lan_ipv4 同源逻辑；无则跳过本用例）。
+    let lan_ips: Vec<String> = local_ip_address::list_afinet_netifas()
+        .expect("枚举网卡")
+        .into_iter()
+        .filter_map(|(_name, ip)| match ip {
+            std::net::IpAddr::V4(v4) if !v4.is_loopback() && v4.is_private() => Some(v4.to_string()),
+            _ => None,
+        })
+        .collect();
+    if lan_ips.is_empty() {
+        eprintln!("[LAN] 本机无 RFC1918 IPv4，跳过局域网冒烟");
+        return;
+    }
+    let lan_ip = lan_ips[0].clone();
+    eprintln!("[LAN] 使用本机局域网地址 {lan_ip} 作为共享 Controller 监听地址");
+
+    let tmp = std::env::temp_dir().join(format!("meshlink-lan-{}", tag()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("mkdir tmp");
+
+    // ---- 机器A：局域网 Controller（监听 LAN_IP，允许局域网明文）----
+    let port = free_port();
+    let addr = format!("{lan_ip}:{port}");
+    let (url_shared, _ctrl) = spawn_controller_at(&ctrl_exe, &tmp, "lan", &addr, true);
+    eprintln!("[LAN] Controller 监听 {addr}（-allow-lan-plaintext）");
+
+    // ---- 机器A Agent：连共享局域网 Controller，创建 code ----
+    let pipe_a = pipe_name("lana");
+    let (mut ui_a, _agent_a) = spawn_agent(&agent_exe, &tmp, "lana", &url_shared, &pipe_a);
+    let id_a = AtomicU64::new(1);
+    wait_ready(&mut ui_a, &id_a, "LAN-A");
+
+    let req = build_request(&id_a, "CreateQuickSession", None).expect("bridge CreateQuickSession");
+    let resp = ui_a.request(&req).expect("CreateQuickSession LAN-A");
+    assert!(resp.ok, "LAN-A 创建失败: {:?}", resp.error);
+    let data = resp.data.expect("创建 data");
+    let code = data["code"].as_str().expect("code 必须 string").to_string();
+    assert_eq!(code.len(), 6, "code 长度 6: {code}");
+    eprintln!("[LAN] A 在共享局域网 Controller 创建 code={code}");
+
+    // ---- 机器B Agent：填 http://机器A_IP:port，用同一 code 加入 ----
+    let pipe_b = pipe_name("lanb");
+    let (mut ui_b, _agent_b) = spawn_agent(&agent_exe, &tmp, "lanb", &url_shared, &pipe_b);
+    let id_b = AtomicU64::new(1);
+    wait_ready(&mut ui_b, &id_b, "LAN-B");
+
+    let req = build_request(&id_b, "JoinQuickSession", Some(&serde_json::json!({ "code": code })))
+        .expect("bridge JoinQuickSession");
+    let resp = ui_b.request(&req).expect("JoinQuickSession LAN-B");
+    assert!(resp.ok, "LAN-B join 命令应被接受: {:?}", resp.error);
+
+    // 双端 PeerFound（同一局域网 Controller 下同一 code）。
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut a_found = false;
+    let mut b_found = false;
+    while Instant::now() < deadline && !(a_found && b_found) {
+        if !a_found {
+            if let Some(ServerMessage::Event(ev)) = ui_a.wait_message(Duration::from_millis(100)) {
+                match ev {
+                    mesh_ipc::Event::PeerFound { .. } | mesh_ipc::Event::Connected { .. } => a_found = true,
+                    mesh_ipc::Event::Error { code, message } => panic!("LAN-A 错误事件 {code}: {message}"),
+                    _ => {}
+                }
+            }
+        }
+        if !b_found {
+            if let Some(ServerMessage::Event(ev)) = ui_b.wait_message(Duration::from_millis(100)) {
+                match ev {
+                    mesh_ipc::Event::PeerFound { .. } | mesh_ipc::Event::Connected { .. } => b_found = true,
+                    mesh_ipc::Event::Error { code, message } => panic!("LAN-B 错误事件 {code}: {message}"),
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(
+        a_found && b_found,
+        "局域网共享 Controller 下同一 code 必须 A/B 都 PeerFound（a={a_found} b={b_found}）"
+    );
+    eprintln!("[LAN] 正确拓扑：双机连同一局域网 Controller {url_shared} → 同一 code 双端 PeerFound");
+
+    // ---- 安全约束：局域网 Controller 明文监听公网地址必须拒绝启动 ----
+    let out = ProcessCommand::new(&ctrl_exe)
+        .arg("-addr")
+        .arg("8.8.8.8:18080")
+        .arg("-db")
+        .arg(tmp.join("ctrl-public-lan.db"))
+        .output()
+        .expect("运行 controller 公网明文");
+    assert!(
+        !out.status.success(),
+        "局域网 Controller 明文监听公网地址也必须拒绝启动（安全约束）"
+    );
+
+    tracing::info!("release 局域网双机冒烟 PASS：LAN Controller 监听 RFC1918 + allow-lan-plaintext；双机同一 code PeerFound；公网明文拒绝");
 }

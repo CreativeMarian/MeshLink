@@ -189,34 +189,34 @@ async function withInvoke(rejectValue) {
   check("公网 IP http 拒绝", api.isProdHttpRejected("http://8.8.8.8:18080") === true);
   check("非法 URL 拒绝", api.isProdHttpRejected("garbage") === true);
 
-  /* ---------------- 6) renderStatus：未连接 Controller 明确提示 ---------------- */
-  console.log("[6] renderStatus：Controller 未连时不显示模糊『连接失败』");
+  /* ---------------- 6) renderStatus：网络服务未连接明确提示 ---------------- */
+  console.log("[6] renderStatus：服务未连时不显示模糊『连接失败』");
   const S = sandbox.window.__MESHLINK_TEST__.S;
   // renderStatus 内部经 getElementById 读写 els["status-pill"/"status-text"]，测试从 els 读回。
   const statusText = () => (els["status-text"] ||= makeEl("status-text")).textContent;
-  // S.ctlErr 置位（CONTROLLER_UNREACHABLE 事件路径）→ 首页状态 = 未连接 Controller。
+  // S.ctlErr 置位（CONTROLLER_UNREACHABLE 事件路径）→ 首页状态 = 网络服务未启动。
   S.ctlErr = true;
   api.renderStatus({ state: "FAILED", user_facing: "连接失败" });
-  check("ctlErr → 显示『未连接 Controller』", statusText() === "未连接 Controller", statusText());
-  // 有设备 ID + 非 Controller 失败 → 保持『连接失败』（不误报 Controller）。
+  check("ctlErr → 显示『网络服务未启动』", statusText() === "网络服务未启动", statusText());
+  // 有设备 ID + 非服务失败 → 保持『连接失败』（不误报服务）。
   S.ctlErr = false;
   api.renderStatus({ state: "FAILED", user_facing: "连接失败", device_id: "dev-x" });
   check("有设备 ID 的失败保持『连接失败』", statusText() === "连接失败", statusText());
-  // 无设备 ID（首次启动未注册成功）→ 视为未连接 Controller。
+  // 无设备 ID（首次启动未注册成功）→ 视为网络服务未启动。
   S.ctlErr = false;
   api.renderStatus({ state: "FAILED", user_facing: "连接失败" });
-  check("无设备 ID 失败 → 未连接 Controller", statusText() === "未连接 Controller", statusText());
+  check("无设备 ID 失败 → 网络服务未启动", statusText() === "网络服务未启动", statusText());
   // READY 正常。
   S.ctlErr = false;
   api.renderStatus({ state: "READY", user_facing: "已就绪", device_id: "dev-x" });
   check("READY 正常显示『已就绪』", statusText() === "已就绪", statusText());
   S.ctlErr = false;
 
-  /* ---------------- 7) NOT_CONFIGURED：首次启动未配置 Controller ---------------- */
-  console.log("[7] renderStatus：未配置 Controller 状态与首页提示");
+  /* ---------------- 7) NOT_CONFIGURED：首次启动未配置网络服务 ---------------- */
+  console.log("[7] renderStatus：未配置状态与首页提示");
   S.ctlErr = false;
-  api.renderStatus({ state: "NOT_CONFIGURED", user_facing: "未配置 Controller" });
-  check("NOT_CONFIGURED → 显示『未配置 Controller』", statusText() === "未配置 Controller", statusText());
+  api.renderStatus({ state: "NOT_CONFIGURED", user_facing: "等待创建连接" });
+  check("NOT_CONFIGURED → 显示『等待创建连接』", statusText() === "等待创建连接", statusText());
   const noconfig = els["home-noconfig"] || makeEl("home-noconfig");
   // renderStatus 内对 READY/CONNECTED 会隐藏，NOT_CONFIGURED 分支要显式显示。
   const noconfigAfter = els["home-noconfig"];
@@ -226,20 +226,24 @@ async function withInvoke(rejectValue) {
   const nc2 = els["home-noconfig"];
   check("READY 后未配置提示隐藏", !!(nc2 && nc2.classList.contains("hidden")));
 
-  /* ---------------- 8) Controller 模式 UI ---------------- */
-  console.log("[8] Controller 模式：local / remote 切换");
+  /* ---------------- 8) 连接模式 UI：创建连接 / 加入连接 ---------------- */
+  console.log("[8] 连接模式：创建连接（local） / 加入连接（remote）切换");
   // 默认 remote 模式（未配置）。
   const modeLocal = els["mode-local"] || makeEl("mode-local");
   const modeRemote = els["mode-remote"] || makeEl("mode-remote");
   modeLocal.checked = false; modeRemote.checked = true;
   api.syncControllerModeUI();
-  const urlRow = els["ctl-url-row"] || makeEl("ctl-url-row");
-  check("remote 模式显示地址输入框", urlRow.style.display !== "none");
+  // sync 会经 getElementById 创建真实元素，需从 els 读回（勿缓存本地对象）。
+  const urlRow2 = els["ctl-url-row"] || makeEl("ctl-url-row");
+  const lanCard2 = els["ctl-lan-card"] || makeEl("ctl-lan-card");
+  check("加入连接模式显示地址输入框", urlRow2.style.display !== "none");
+  check("加入连接模式隐藏局域网信息卡", lanCard2.style.display === "none");
   modeLocal.checked = true; modeRemote.checked = false;
   api.syncControllerModeUI();
-  check("local 模式隐藏地址输入框", urlRow.style.display === "none");
+  const lanCard3 = els["ctl-lan-card"] || makeEl("ctl-lan-card");
+  check("创建连接模式显示局域网信息卡", lanCard3.style.display === "block");
   const hint = els["ctl-mode-hint"] || makeEl("ctl-mode-hint");
-  check("local 模式提示含本机地址", (hint.textContent || "").indexOf("127.0.0.1") !== -1);
+  check("创建连接模式提示含发起方说明", (hint.textContent || "").indexOf("发起方") !== -1);
 
   console.log("\nRESULT: " + pass + " passed, " + fail + " failed");
   if (fail > 0) process.exit(1);

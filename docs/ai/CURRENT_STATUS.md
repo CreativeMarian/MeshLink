@@ -37,6 +37,10 @@ v0.1.0
 [x] 双机 Controller 生命周期设计（首次启动未配置不再默认连 127.0.0.1；设置页本机/已有地址二选一；
     仅「本机 Controller」模式才自动拉起 controller.exe；双机联机必须选「已有 Controller 地址」共享同一 Controller）
 
+[x] Controller 生命周期与双机部署修复（三模式：LOCAL=本机 / LAN=局域网 RFC1918 自动监听 + -allow-lan-plaintext /
+    REMOTE=已有地址不拉起本机；启动日志 [Controller Start] Mode/Listen；UI 用户化：首页【创建连接/加入连接】、
+    设置页【连接设置】创建/加入二选一、服务器地址进高级设置隐藏；术语清理 Controller/SESSION/PeerFound）
+
 
 ## Current Development
 

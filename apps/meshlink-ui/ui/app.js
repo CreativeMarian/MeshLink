@@ -52,7 +52,8 @@ const S = {
   inviteResult: null, // {uri, token}
   toastTimer: null,
   controllerUrl: "",
-  ctlErr: false,      // Controller 不可达横幅可见性（事件驱动 + poll 兜底）
+  controllerCfg: {},   // 连接配置（mode / lan_ip / effective_url，供设置页展示）
+  ctlErr: false,      // 网络服务不可达横幅可见性（事件驱动 + poll 兜底）
 };
 
 /* ---------------- 工具 ---------------- */
@@ -235,18 +236,18 @@ function renderStatus(snap) {
   else if (state === "CONNECTED") { cls = "dot-green"; label = "已连接"; }
   else if (state === "NOT_CONFIGURED") {
     cls = "dot-gray";
-    label = "未配置 Controller";
-    // 首页明确提示去配置（双机架构调整：首次启动无配置时不默认 127.0.0.1）。
+    label = "等待创建连接";
+    // 首页明确提示去设置选择创建/加入（首次启动无配置时不默认本机地址）。
     $("home-noconfig").classList.remove("hidden");
   }
   else if (state === "FAILED" || state === "STOPPED") { cls = "dot-red"; }
   else if (state && state !== "STARTING") { cls = "dot-blue"; }
   label = (snap && snap.user_facing) || label;
-  // 未连接 Controller：明确提示（用户规格：不要显示模糊"连接失败"）。
-  // FAILED/STOPPED 且 agent 尚未注册成功（无 device_id）→ 不是会话失败，是 Controller 未连上。
+  // 网络服务未连接：明确提示（用户化：不显示技术术语）。
+  // FAILED/STOPPED 且 agent 尚未注册成功（无 device_id）→ 不是会话失败，是网络服务未连上。
   if (state === "FAILED" || state === "STOPPED") {
     const ctlDown = S.ctlErr || !(snap && snap.device_id);
-    if (ctlDown && label === "连接失败") label = "未连接 Controller";
+    if (ctlDown && label === "连接失败") label = "网络服务未启动";
   }
   pill.className = "dot " + cls;
   text.textContent = label;
@@ -420,11 +421,11 @@ function handleEvent(ev) {
 
 function handleErrorEvent(d) {
   const code = d.code || "UNKNOWN";
-  // Controller 不可达：不要只卡着等待，显示专用横幅（当前地址 + 重连 + 改地址）。
+  // 网络服务不可达：不要只卡着等待，显示专用横幅（当前地址 + 重连 + 改设置）。
   if (code === "CONTROLLER_UNREACHABLE") {
     S.ctlErr = true;
     showControllerUnreachable(S.controllerUrl || "");
-    renderStatus({ state: "FAILED", user_facing: "未连接 Controller" });
+    renderStatus({ state: "FAILED", user_facing: "网络服务未启动" });
     if (S.view === "progress") setStep(-1);
     return;
   }
@@ -457,7 +458,7 @@ function resetSessionUi() {
   $("btn-join-connect").disabled = false;
 }
 
-/* ---------------- Controller 不可达横幅 ---------------- */
+/* ---------------- 网络服务不可达横幅 ---------------- */
 
 function showControllerUnreachable(url) {
   $("ctl-err-url").textContent = url || S.controllerUrl || "--";
@@ -900,29 +901,40 @@ async function refreshDevices() {
   }
 }
 
-/* ---------------- 设置：Controller 模式与地址（双机架构调整） ---------------- */
+/* ---------------- 设置：连接模式（创建连接 / 加入连接，用户化） ---------------- */
 
 const DEFAULT_CONTROLLER_URL = "http://127.0.0.1:18080";
 
+// 用户可见模式：创建连接 = 本机发起网络（内部 local，有局域网地址自动启用局域网访问）；
+// 加入连接 = 连接别人的网络（内部 remote，不启动本机服务）。
 function currentControllerMode() {
   return $("mode-local").checked ? "local" : "remote";
 }
 
 function applyControllerModeUI(mode, url) {
-  $("mode-local").checked = mode === "local";
-  $("mode-remote").checked = mode !== "local";
+  const local = mode === "local" || mode === "lan";
+  $("mode-local").checked = local;
+  $("mode-remote").checked = !local;
   syncControllerModeUI();
   const u = (url || "").trim();
   $("controller-url").value = u;
-  if (mode !== "local" && !u) $("controller-url").value = "";
+  if (!local && !u) $("controller-url").value = "";
 }
 
 function syncControllerModeUI() {
   const local = currentControllerMode() === "local";
-  $("ctl-url-row").style.display = local ? "none" : "flex";
-  $("ctl-mode-hint").textContent = local
-    ? "MeshLink 将自动启动本机 controller.exe（" + DEFAULT_CONTROLLER_URL + "）。双机共享请选择「已有 Controller 地址」。"
-    : "使用已有 Controller（如局域网共享或公网 HTTPS）。MeshLink 不会自动启动本机 controller.exe。";
+  $("ctl-url-row").style.display = "flex";
+  $("ctl-lan-card").style.display = local ? "block" : "none";
+  if (local) {
+    $("ctl-mode-hint").textContent = "我的电脑作为连接发起方。其他设备可通过我的地址加入网络（同一局域网自动开放访问）。";
+    // 显示本机地址（用户化：不叫监听地址/端口）。
+    const cfg = S.controllerCfg || {};
+    const ip = cfg.lan_ip || "获取中...";
+    $("ctl-lan-ip").textContent = ip ? ip + ":18080" : "--";
+    $("ctl-lan-note").textContent = ip ? "其他设备可加入此网络" : "未检测到局域网地址，仅本机可用";
+  } else {
+    $("ctl-mode-hint").textContent = "我的电脑加入别人创建的网络。需要填写对方提供的服务器地址。";
+  }
 }
 
 function isProdHttpRejected(url) {
@@ -951,10 +963,14 @@ function isPrivateHost(host) {
 async function testController() {
   const mode = currentControllerMode();
   let url = ($("controller-url").value || "").trim();
-  if (mode === "local") url = DEFAULT_CONTROLLER_URL;
+  const local = mode === "local";
   $("settings-error").textContent = "";
-  if (mode === "remote" && isProdHttpRejected(url)) {
-    $("settings-error").textContent = "生产 Controller 必须使用 HTTPS（开发机可用 http://localhost/ 或 http://127.0.0.1/）。";
+  if (!local && isProdHttpRejected(url)) {
+    $("settings-error").textContent = "加入连接需要有效的服务器地址（https:// 或可信局域网 http://）。";
+    return;
+  }
+  if (!local && !url) {
+    $("settings-error").textContent = "请先填写对方提供的服务器地址（可展开「高级设置」）。";
     return;
   }
   try {
@@ -967,7 +983,7 @@ async function testController() {
     $("ctl-server").textContent = data.url ? new URL(data.url).host : "--";
     $("ctl-device").textContent = data.device_id || "--";
     if (c) $("settings-error").textContent = "连接正常（" + data.url + "）。";
-    else $("settings-error").textContent = "无法连接 Controller，请检查地址与网络。";
+    else $("settings-error").textContent = "无法连接服务器，请检查地址与网络。";
   } catch (e) {
     $("settings-error").textContent = "测试失败：" + (ERROR_TEXT[errorCode(e)] || formatError(e));
   }
@@ -977,14 +993,13 @@ async function saveController() {
   const mode = currentControllerMode();
   let url = ($("controller-url").value || "").trim();
   $("settings-error").textContent = "";
-  if (mode === "remote") {
-    if (!url) { $("settings-error").textContent = "请输入已有 Controller 地址。"; return; }
+  const local = mode === "local";
+  if (!local) {
+    if (!url) { $("settings-error").textContent = "请填写对方提供的服务器地址（可展开「高级设置」）。"; return; }
     if (isProdHttpRejected(url)) {
-      $("settings-error").textContent = "生产 Controller 必须使用 HTTPS（开发机可用 http://localhost/ 或 http://127.0.0.1/）。";
+      $("settings-error").textContent = "加入连接需要有效的服务器地址（https:// 或可信局域网 http://）。";
       return;
     }
-  } else {
-    url = DEFAULT_CONTROLLER_URL;
   }
   try {
     const cfg = await invoke("save_controller_config", { mode, url });
@@ -1139,16 +1154,17 @@ async function boot() {
     }
   });
   startStatusPoll();
-  // 读取已保存的 Controller 配置回填设置页（含模式）；无保存值保持未配置态。
+  // 读取已保存的连接配置回填设置页（含模式与局域网地址）；无保存值保持未配置态。
   try {
     const cfg = await invoke("get_controller_config");
     if (cfg) {
+      S.controllerCfg = cfg;
       S.controllerUrl = cfg.effective_url || "";
       if (cfg.mode) applyControllerModeUI(cfg.mode, cfg.controller_url || cfg.effective_url || "");
       else applyControllerModeUI("remote", cfg.controller_url || "");
     }
   } catch { /* 默认值由 spawn_agent_process 兜底 */ }
-  // 首次启动即加载「当前 Controller 地址 / 连接状态」（无需先点进设置页）。
+  // 首次启动即加载「当前地址 / 连接状态」（无需先点进设置页）。
   loadControllerStatus();
   refreshFriends();
   refreshRecent();
@@ -1180,7 +1196,6 @@ async function loadControllerStatus() {
 
 $("btn-create").addEventListener("click", startCreate);
 $("btn-join").addEventListener("click", () => { hideError($("join-error")); $("join-code").value = ""; show("join"); });
-$("btn-invite").addEventListener("click", openInviteModal);
 $("btn-invite-2").addEventListener("click", openInviteModal);
 $("btn-ctl-retry").addEventListener("click", retryController);
 $("btn-ctl-change").addEventListener("click", () => { show("settings"); const el = $("controller-url"); el.focus(); el.select(); });

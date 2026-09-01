@@ -23,13 +23,13 @@
       <button id="btn-diag" class="btn-ghost" title="高级诊断">诊断</button>
     </header>
 
-    <!-- Controller 不可达横幅（规格：UI 不要只卡着等待；提供重连与改地址） -->
+    <!-- 连接服务不可达横幅（用户化：不显示技术术语） -->
     <div id="ctl-err" class="ctl-err hidden">
-      <div class="ctl-err-title">未连接 Controller</div>
+      <div class="ctl-err-title">网络服务未启动</div>
       <div class="ctl-err-addr">当前地址：<span class="mono" id="ctl-err-url">--</span></div>
       <div class="ctl-err-actions">
         <button id="btn-ctl-retry" class="btn btn-primary btn-sm">重新连接</button>
-        <button id="btn-ctl-change" class="btn btn-secondary btn-sm">修改 Controller 地址</button>
+        <button id="btn-ctl-change" class="btn btn-secondary btn-sm">修改设置</button>
       </div>
     </div>
 
@@ -39,12 +39,12 @@
         <span id="status-pill" class="dot dot-gray"></span>
         <span id="status-text" class="status-text">正在连接服务...</span>
       </div>
-      <!-- 双机架构调整：首次启动无 Controller 配置时的明确提示 -->
+      <!-- 首次启动无连接配置：明确提示选择创建/加入（用户化，不暴露技术术语） -->
       <div id="home-noconfig" class="ctl-err hidden">
-        <div class="ctl-err-title">未配置 Controller</div>
-        <div class="ctl-err-addr">请选择「使用本机 Controller」或「使用已有 Controller 地址」。</div>
+        <div class="ctl-err-title">网络服务未启动</div>
+        <div class="ctl-err-addr">请选择「创建连接」发起网络，或「加入连接」进入别人的网络。</div>
         <div class="ctl-err-actions">
-          <button id="btn-noconfig-settings" class="btn btn-primary btn-sm">去配置</button>
+          <button id="btn-noconfig-settings" class="btn btn-primary btn-sm">去设置</button>
         </div>
       </div>
       <div class="home-device-card" id="home-device-card" style="display:none">
@@ -56,9 +56,14 @@
         <span class="mono" id="home-path">--</span>
       </div>
       <div class="home-actions">
-        <button id="btn-create" class="btn btn-primary">创建6位连接</button>
-        <button id="btn-join" class="btn btn-secondary">加入连接</button>
-        <button id="btn-invite" class="btn btn-secondary">邀请好友</button>
+        <div class="home-action-card">
+          <button id="btn-create" class="btn btn-primary btn-lg">创建连接</button>
+          <p class="home-action-desc">让其他设备加入你的网络</p>
+        </div>
+        <div class="home-action-card">
+          <button id="btn-join" class="btn btn-secondary btn-lg">加入连接</button>
+          <p class="home-action-desc">输入连接码，加入其他设备的网络</p>
+        </div>
       </div>
       <div id="home-error" class="error-banner hidden"></div>
       <div class="friend-mini">
@@ -70,7 +75,7 @@
         <p class="section-title-sm">最近连接</p>
         <div id="home-recent" class="recent-list"><span class="muted">暂无最近连接</span></div>
       </div>
-      <p class="home-hint">创建 6 位连接码用于陌生设备临时连接；与好友直连请到「好友」页一键连接。</p>
+      <p class="home-hint">需要邀请好友时，请到「好友」页使用邀请功能。</p>
     </section>
 
     <!-- ============ 创建（等待好友加入）============ -->
@@ -148,27 +153,34 @@
       <div id="devices-list" class="list"><span class="muted">加载中...</span></div>
     </section>
 
-    <!-- ============ 设置 ============ -->
+    <!-- ============ 设置（连接设置，用户化） ============ -->
     <section id="view-settings" class="view">
-      <p class="section-title">网络服务</p>
+      <p class="section-title">连接设置</p>
       <div class="radio-row">
-        <span class="info-label" style="flex:none">Controller 模式</span>
-        <label><input type="radio" name="ctl-mode" id="mode-local" value="local" /> 使用本机 Controller</label>
-        <label><input type="radio" name="ctl-mode" id="mode-remote" value="remote" /> 使用已有 Controller 地址</label>
+        <span class="info-label" style="flex:none">当前模式</span>
+        <label><input type="radio" name="ctl-mode" id="mode-local" value="local" /> 创建连接</label>
+        <label><input type="radio" name="ctl-mode" id="mode-remote" value="remote" /> 加入连接</label>
       </div>
       <p id="ctl-mode-hint" class="muted" style="font-size:12px;margin:6px 0 0 0"></p>
-      <div class="form-row" id="ctl-url-row">
-        <span class="info-label">Controller 地址</span>
-        <input id="controller-url" class="text-input" placeholder="https://control.example.com/" autocomplete="off" />
+      <div class="info-card" id="ctl-lan-card" style="display:none;margin-top:10px">
+        <div class="info-row"><span class="info-label">我的电脑地址</span><span class="info-value mono" id="ctl-lan-ip">--</span></div>
+        <div class="info-row"><span class="info-label">其他设备可用</span><span class="info-value" id="ctl-lan-note">--</span></div>
       </div>
-      <p id="settings-error" class="error-text muted"></p>
-      <div class="action-row">
-        <button id="btn-test-controller" class="btn btn-secondary">测试连接</button>
-        <button id="btn-save-controller" class="btn btn-primary">保存并应用</button>
-      </div>
-      <div class="info-card" id="controller-status-card">
-        <div class="info-row"><span class="info-label">Controller</span><span class="info-value" id="ctl-state">--</span></div>
-        <div class="info-row"><span class="info-label">当前 Controller 地址</span><span class="info-value mono" id="ctl-effective-url">--</span></div>
+      <details class="adv-settings">
+        <summary>高级设置</summary>
+        <div class="form-row" id="ctl-url-row">
+          <span class="info-label">服务器地址</span>
+          <input id="controller-url" class="text-input" placeholder="https://control.example.com/" autocomplete="off" />
+        </div>
+        <p id="settings-error" class="error-text muted"></p>
+        <div class="action-row">
+          <button id="btn-test-controller" class="btn btn-secondary">测试连接</button>
+          <button id="btn-save-controller" class="btn btn-primary">保存并应用</button>
+        </div>
+      </details>
+      <div class="info-card" id="controller-status-card" style="margin-top:10px">
+        <div class="info-row"><span class="info-label">连接服务</span><span class="info-value" id="ctl-state">--</span></div>
+        <div class="info-row"><span class="info-label">当前地址</span><span class="info-value mono" id="ctl-effective-url">--</span></div>
         <div class="info-row"><span class="info-label">延迟</span><span class="info-value" id="ctl-latency">--</span></div>
         <div class="info-row"><span class="info-label">服务器</span><span class="info-value mono" id="ctl-server">--</span></div>
         <div class="info-row"><span class="info-label">我的设备</span><span class="info-value mono" id="ctl-device">--</span></div>

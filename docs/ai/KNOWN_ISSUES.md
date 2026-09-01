@@ -13,6 +13,23 @@
 - Fast reconnect optimization
 
 
+## Controller 生命周期三模式 + UI 用户化（2026-09-01）
+
+- 三模式落地：LOCAL（创建连接）自动拉起 controller.exe 并监听本机 RFC1918（有私网地址时）
+  或 127.0.0.1；LAN（局域网）显式监听 RFC1918 + `-allow-lan-plaintext`；REMOTE（加入连接）
+  只连已有地址、绝不拉起本机 controller.exe（双机联机必须选「加入连接」指向同一共享 Controller）。
+- `detect_lan_ipv4` 取本机**第一个** RFC1918 非回环 IPv4（多网卡机器可能选到非目标网卡；
+  已记录为已知限制，M1-3 后可做网卡选择 UI）。
+- LAN 明文仅放行 RFC1918 私网；公网明文无论是否 `-allow-lan-plaintext` 一律拒绝启动（安全红线不变）。
+- 物理双机实机流程仍标 `PENDING_REAL_WORLD_VALIDATION`（本环境无第二台物理机）；已用
+  `release_lan_controller_shared_topology` 真实 dist 二进制等价覆盖：Controller 监听本机
+  RFC1918 + `-allow-lan-plaintext`，双 Agent 指向 `http://<LAN_IP>:port` → 同一 code 双端
+  PeerFound；公网明文拒启。
+- UI 用户化后普通用户看不到 Controller/SESSION/PeerFound 等术语；开发文档与高级诊断保留专业名称。
+- 自动化集成测试在高负载并行运行时偶发启动轮询超时（free_port TOCTOU 加剧），单测/顺序跑
+  全部 PASS；属测试基建抖动，不影响产品逻辑。
+
+
 ## M1-2 N2N + Supernode（2026-09-01）
 
 

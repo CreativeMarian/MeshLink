@@ -19,6 +19,7 @@ mesh-ipc = { path = "../../crates/mesh-ipc" }
 controller-client = { path = "../../crates/controller-client" }
 serde.workspace = true
 serde_json.workspace = true
+local-ip-address = "0.6"
 
 [profile.dev]
 # UI 调试构建与 workspace 默认一致，无需覆盖

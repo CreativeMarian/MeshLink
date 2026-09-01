@@ -85,6 +85,32 @@ Supernode Registry 等所有 Controller 状态都必须落在**同一个** Contr
 5. **自动化**：JS contract 覆盖 NOT_CONFIGURED 渲染与模式切换；`release_gui_smoke` 不经过
    MeshLink.exe `agent_connect`（直接 spawn 二进制），因此不受生命周期改动影响。
 
+## 补充决策：三模式生命周期 + LAN 自动监听（MeshLink.exe 启动参数策略）
+
+控制器监听方式由 MeshLink.exe 依据用户选择的模式决定（**不重构 Controller 架构**，仅生命周期
+与启动参数）：
+
+1. **三种模式**：
+   - **LOCAL（创建连接 / 本机）**：MeshLink 自动拉起 `controller.exe`；本机存在 RFC1918
+     局域网地址时监听 `<私网IP>:18080` 并带 `-allow-lan-plaintext`（同一局域网其他设备可加入），
+     无则监听 `127.0.0.1:18080`。
+   - **LAN（局域网）**：显式监听本机 RFC1918 IPv4 + `-allow-lan-plaintext`（多设备共享一个
+     Controller 的家庭/朋友场景）。
+   - **REMOTE（加入连接 / 已有地址）**：只连接用户填写的服务器地址，**绝不**拉起本机
+     controller.exe（双机联机必须此项）。
+2. **自动探测局域网地址**：`detect_lan_ipv4()` 枚举 RFC1918 非回环 IPv4 取第一个
+   （`local-ip-address` crate，与测试同源）；多网卡选卡问题记录为已知限制。
+3. **启动日志**：`[Controller Start] Mode: LOCAL|LAN|REMOTE Listen: <addr>`。
+4. **安全红线不变**：LAN 明文仅放行 RFC1918 私网；公网明文无论是否加开关一律拒绝启动。
+5. **UI 用户化**：普通用户界面不出现 Controller/监听地址/端口/Agent/节点 等术语——
+   首页两入口【创建连接/加入连接】；设置页【连接设置】○创建连接（我的电脑作为连接发起方）
+   /○加入连接（我的电脑加入别人创建的网络）；服务器地址收进「高级设置」默认隐藏；
+   状态文案「网络服务未启动 / 等待创建连接」。
+6. **验证**：单测 `controller_listen_spec` 锁定启动参数策略；release 冒烟
+   `release_lan_controller_shared_topology` 用真实 dist 二进制验证 Controller 监听本机
+   RFC1918 + `-allow-lan-plaintext`、双 Agent 指向 `http://<LAN_IP>:port` → 同一 code 双端
+   PeerFound；公网明文拒启。
+
 ## 理由与权衡
 
 - 选择 B/C 而非 D（对账同步）：Controller 是唯一事实来源（单一写入点），对账方案需要
