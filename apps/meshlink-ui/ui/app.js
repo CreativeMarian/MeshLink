@@ -257,6 +257,11 @@ function renderStatus(snap) {
   } else {
     $("home-overlay-ip").textContent = "--";
   }
+  // M1-2：首页状态同步显示当前路径（DirectLink / N2N Relay；未连接 = --）。
+  const hp = $("home-path");
+  if (hp) {
+    hp.textContent = snap && snap.current_path ? (snap.current_path === "n2n" ? "N2N Relay" : "DirectLink") : "--";
+  }
   // 好友在线状态随 ListFriends 刷新（列表含在线位）。
   if (snap && snap.state === "READY") refreshFriends();
 }
@@ -341,10 +346,13 @@ function handleEvent(ev) {
     case "Connected":
       S.connectedInfo = {
         local: d.local_overlay_ip, peer: d.peer_overlay_ip, peerDevice: d.peer_device_id,
+        path: d.path || "",
       };
       $("conn-peer-ip").textContent = d.peer_overlay_ip || "--";
       $("conn-local-ip").textContent = d.local_overlay_ip || "--";
       $("conn-peer-device").textContent = d.peer_device_id || "--";
+      // M1-2：普通 UI 显示 DirectLink / N2N Relay（不暴露技术术语）。
+      $("conn-path").textContent = d.path === "n2n" ? "N2N Relay" : "DirectLink";
       renderStatus({ state: "CONNECTED", user_facing: "已连接" });
       show("connected");
       // M1-1.5：连接成功即记录 recent（Agent 异步落库后推送 RecentConnectionsChanged）。
@@ -985,6 +993,7 @@ function renderDiagnostics(d) {
 
   let html = noDataNote + `<div class="diag-section">路径</div>`;
   html += row("Path", sel.local ? `${sel.local} → ${sel.remote}` : "未建立");
+  html += row("当前路径", d.current_path === "n2n" ? "N2N Relay" : d.current_path === "directlink" ? "DirectLink" : "--");
   html += row("对端类型", sel.remote_kind || "--");
   html += row("RTT", rttMs !== null ? rttMs + " ms" : "--");
   html += row("STUN", d.stun || "未使用（同机/直连）");

@@ -93,6 +93,10 @@ pub struct StatusSnapshot {
     /// 顶层活动会话（UI 刷新 / 页面切换后可恢复 6 位码——用户规格四）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_session: Option<ActiveSession>,
+    /// M1-2：当前连接实际路径（"" 未连接 / "directlink" / "n2n"；UI 展示
+    /// DirectLink / N2N Relay，与 forced_path 区分——强制选择 vs 实际生效）。
+    #[serde(default)]
+    pub current_path: String,
 }
 
 /// 顶层活动会话（GetStatus data.active_session）。
@@ -117,6 +121,7 @@ impl StatusSnapshot {
             controller: controller.into(),
             session: None,
             active_session: None,
+            current_path: String::new(),
         }
     }
 }
@@ -171,6 +176,7 @@ mod tests {
                 }],
             }),
             active_session: None,
+            current_path: "directlink".into(),
         };
         let s = serde_json::to_string(&snap).unwrap();
         assert!(s.contains(r#""state":"CONNECTED""#));

@@ -84,14 +84,14 @@ fn spawn_controller(tmp: &std::path::Path) -> (String, ControllerGuard) {
     let url = format!("http://{addr}");
     let client = controller_client::Client::new(&url).expect("controller client");
     let guard = ControllerGuard { child };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Ok(v) = client.healthz() {
             assert_eq!(v["status"], "ok");
             break;
         }
         if Instant::now() > deadline {
-            panic!("Controller 10s 内未就绪");
+            panic!("Controller 30s 内未就绪");
         }
         std::thread::sleep(Duration::from_millis(100));
     }

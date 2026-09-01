@@ -665,6 +665,30 @@ impl Client {
         Ok(list.supernodes)
     }
 
+    /// M1-2：注册/更新一个 Supernode（POST /v1/supernodes，需已注册设备 credential）。
+    /// MeshLink 监督者拉起的本机 DEV/自托管 Supernode 由 Agent 以本方法登记，
+    /// credential 始终由 Agent 持有（UI 不触碰）。
+    pub fn register_supernode(
+        &self,
+        credential: &str,
+        id: &str,
+        host: &str,
+        port: u16,
+        priority: u32,
+    ) -> ApiResult<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            id: &'a str,
+            host: &'a str,
+            port: u16,
+            priority: u32,
+        }
+        let body = serde_json::to_vec(&Req { id, host, port, priority })
+            .map_err(|e| ApiError::transport(format!("序列化失败: {e}")))?;
+        let _: serde_json::Value = self.request("POST", "/v1/supernodes", Some(credential), Some(&body))?;
+        Ok(())
+    }
+
     // ---- M1-1.5：最近连接历史 ----
 
     /// GET /v1/devices/me/recent-connections（auth）：本机最近连接历史。

@@ -43,6 +43,9 @@ fn main() {
             .filter(|s| !s.is_empty())
             .collect();
     }
+    // M1-2 测试/诊断注入：MESHLINK_FORCE_DIRECTLINK_FAIL=1 时 DirectLink 建链立即失败，
+    // 触发 Auto 路径自动回退 N2N（自动化测试确定性覆盖回退链路）。
+    cfg.force_directlink_fail = std::env::var("MESHLINK_FORCE_DIRECTLINK_FAIL").map(|v| v == "1").unwrap_or(false);
     let pipe = std::env::var("MESHLINK_PIPE_NAME")
         .unwrap_or_else(|_| mesh_ipc::DEFAULT_PIPE_NAME.into());
 

@@ -30,11 +30,13 @@ pub struct IpcState {
     job_tx: Mutex<Option<Sender<IpcJob>>>,
     agent: Mutex<Option<Child>>,
     controller: Mutex<Option<Child>>,
+    /// M1-2：DEV/自托管 n2n-supernode 子进程（仅本进程拉起时持有 ownership）。
+    supernode: Mutex<Option<Child>>,
     connected: Arc<AtomicBool>,
     next_id: AtomicU64,
     /// M1-1.5：runtime 残留检测只做一次。
     residue_checked: AtomicBool,
-    /// M1-1.5：supervisor（mesh-agent / DEV controller 的所有权管理）。
+    /// M1-1.5：supervisor（mesh-agent / DEV controller / DEV supernode 的所有权管理）。
     supervisor: ProcessSupervisor,
 }
 
@@ -44,6 +46,7 @@ impl IpcState {
             job_tx: Mutex::new(None),
             agent: Mutex::new(None),
             controller: Mutex::new(None),
+            supernode: Mutex::new(None),
             connected: Arc::new(AtomicBool::new(false)),
             next_id: AtomicU64::new(1),
             residue_checked: AtomicBool::new(false),
@@ -100,7 +103,8 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
 
     // 确保 DEV Controller 就绪（生产 https 远程 Controller 不会在此拉起）。
     let controller_url = effective_controller_url();
-    if is_dev_controller(&controller_url) && !controller_healthy(&controller_url) {
+    let dev_mode = is_dev_controller(&controller_url);
+    if dev_mode && !controller_healthy(&controller_url) {
         spawn_dev_controller(&state)?;
     }
 
@@ -119,6 +123,11 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
     };
 
     start_ipc_loop(state.inner(), app, client);
+    // M1-2：DEV 模式拉起本机 n2n-supernode 并注册到 Controller Supernode Registry
+    // （Agent 持有 credential；UI 不触碰密钥。注册失败不阻断首页 READY）。
+    if dev_mode {
+        let _ = spawn_dev_supernode_and_register(state.inner());
+    }
     send_status(&state)
 }
 
@@ -198,6 +207,62 @@ fn spawn_dev_controller(state: &IpcState) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(300));
     }
+}
+
+/// M1-2：DEV 模式拉起本机 n2n-supernode.exe（无参 → 默认 0.0.0.0:7654）并注册到
+/// Controller Supernode Registry（经 Agent IPC，credential 由 Agent 持有）。
+/// - n2n-supernode.exe 未随包 → 跳过（N2N 路径仍可由 Controller Registry 下发远程 SN）。
+/// - 已拉起（重连场景）→ 幂等复用，仅重新注册刷新健康时间。
+fn spawn_dev_supernode_and_register(state: &IpcState) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("exe 路径失败：{e}"))?;
+    let dir = exe.parent().ok_or("exe 目录解析失败")?;
+    let sn = dir.join("n2n-supernode.exe");
+    if !sn.exists() {
+        eprintln!("[MeshLink] 未找到 n2n-supernode.exe（{}），跳过自动拉起", sn.display());
+        return Ok(());
+    }
+
+    // 仅当本进程尚未拉起 supernode 时 spawn（重连幂等）。
+    if state.supernode.lock().unwrap().is_none() {
+        let log_path = state.supervisor.runtime.dir.join("supernode.log");
+        let _ = state.supervisor.runtime.ensure();
+        let stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map(Stdio::from)
+            .unwrap_or(Stdio::null());
+        let mut cmd = StdCommand::new(&sn);
+        cmd.stdout(Stdio::null()).stderr(stderr);
+        let child = state
+            .supervisor
+            .spawn_managed("supernode", "n2n-supernode.exe", &mut cmd)
+            .map_err(|e| format!("n2n-supernode 启动失败：{e}"))?;
+        *state.supernode.lock().unwrap() = Some(child);
+    }
+
+    // 注册到 Controller Registry（host 用回环地址；优先绑定可被对端访问的地址由
+    // 用户后续配置远程 SN 覆盖）。注册失败不阻断（Agent 仍可连远程 SN 池）。
+    if let Some(tx) = state.job_tx.lock().unwrap().clone() {
+        let req = Request {
+            id: state.next_id.fetch_add(1, Ordering::Relaxed),
+            command: Command::RegisterLocalSupernode {
+                sn_id: "sn-local".into(),
+                host: "127.0.0.1".into(),
+                port: 7654,
+                priority: 100,
+            },
+        };
+        let (reply_tx, reply_rx) = mpsc::channel();
+        if tx.send(IpcJob::Request { req, reply: reply_tx }).is_ok() {
+            match reply_rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(Ok(_)) => eprintln!("[MeshLink] 本机 Supernode sn-local 已注册到 Controller"),
+                Ok(Err(e)) => eprintln!("[MeshLink] Supernode 注册失败: {e}"),
+                Err(_) => eprintln!("[MeshLink] Supernode 注册超时"),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 转发一条 IPC 命令（统一入口；未知命令 serde 直接拒绝）。
@@ -316,6 +381,12 @@ pub fn shutdown(state: &IpcState) {
 
     // 5. 关闭 DEV controller（仅关本进程拉起的）。
     if let Some(mut child) = state.controller.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    // M1-2：关闭本机 n2n-supernode（仅关本进程拉起的）。
+    if let Some(mut child) = state.supernode.lock().unwrap().take() {
         let _ = child.kill();
         let _ = child.wait();
     }

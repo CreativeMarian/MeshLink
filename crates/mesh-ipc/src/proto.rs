@@ -61,6 +61,9 @@ pub enum Command {
     /// M1-1.5：优雅关闭（关闭当前会话 → 清理 runtime 临时文件 → 进程退出；
     /// MeshLink 退出时按序调用，正常退出后由 ProcessSupervisor 兜底清理）。
     Shutdown,
+    /// M1-2：注册本机（MeshLink 监督者拉起的）DEV/自托管 Supernode 到
+    /// Controller Registry（credential 由 Agent 持有，UI 不触碰密钥）。
+    RegisterLocalSupernode { sn_id: String, host: String, port: u16, priority: u32 },
 }
 
 /// UI → Agent 请求信封。
@@ -115,10 +118,13 @@ pub enum Event {
     /// Noise IK 握手中（含双向公钥校验）。
     NoiseHandshaking { role: String },
     /// 全部成功（用户规格十二的 8 条件全部满足后才发）。
+    /// `path` = 当前连接实际路径：`directlink` | `n2n`（M1-2 UI 展示 DirectLink / N2N Relay）。
     Connected {
         peer_device_id: String,
         local_overlay_ip: String,
         peer_overlay_ip: String,
+        #[serde(default)]
+        path: String,
     },
     /// 数据路径变化（后续 Path Manager 使用）。
     PathChanged { detail: String },
@@ -289,6 +295,7 @@ mod tests {
             Command::ListRecentConnections,
             Command::DeleteRecentConnection { remote_device_id: "dev-b".into() },
             Command::Shutdown,
+            Command::RegisterLocalSupernode { sn_id: "sn-local".into(), host: "127.0.0.1".into(), port: 7654, priority: 100 },
         ];
         for (i, c) in cmds.into_iter().enumerate() {
             let req = Request { id: i as u64, command: c };
@@ -311,6 +318,7 @@ mod tests {
                 peer_device_id: "dev-b".into(),
                 local_overlay_ip: "10.88.7.1".into(),
                 peer_overlay_ip: "10.88.7.2".into(),
+                path: "directlink".into(),
             },
             Event::PathChanged { detail: "direct".into() },
             Event::Disconnected { reason: "cancelled".into() },

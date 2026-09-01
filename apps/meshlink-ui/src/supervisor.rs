@@ -1,7 +1,7 @@
-//! ProcessSupervisor（M1-1.5 规格一/二/三/五）：
+//! ProcessSupervisor（M1-1.5 规格一/二/三/五 + M1-2）：
 //!
-//! MeshLink 是当前运行监督者（DEV 模式）——负责 mesh-agent.exe 与 DEV
-//! controller.exe 的 spawn 与完整回收：
+//! MeshLink 是当前运行监督者（DEV 模式）——负责 mesh-agent.exe、DEV
+//! controller.exe 与 DEV n2n-supernode.exe 的 spawn 与完整回收：
 //! - 所有权记录在 `runtime/managed_process.json`（pid / start_time / 期望映像名）；
 //! - 正常退出：有序 Shutdown（规格二）后清空 runtime；
 //! - 异常退出：下次启动 `detect_and_clean_residue()` 检测残留，仅终止记录中仍
@@ -26,7 +26,7 @@ pub const RUNTIME_FILES: [&str; 4] = [
 /// 一条受管理进程的所有权记录。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ManagedProcess {
-    pub kind: String, // agent | controller
+    pub kind: String, // agent | controller | supernode
     pub pid: u32,
     pub start_time: String,
     /// 期望进程映像名（小写，如 "mesh-agent.exe"）——残留清理时用 tasklist 校验，

@@ -297,7 +297,7 @@ mod tests {
         .expect("parse");
         match msg {
             ServerMessage::Response(_) => panic!("应为事件"),
-            ServerMessage::Event(Event::Connected { peer_device_id: _, local_overlay_ip: _, peer_overlay_ip: _ }) => {}
+            ServerMessage::Event(Event::Connected { peer_device_id: _, local_overlay_ip: _, peer_overlay_ip: _, path: _ }) => {}
             ServerMessage::Event(_) => panic!("应为 Connected"),
         }
         let msg = parse_message(br#"{"id":9,"ok":true}"#).expect("parse");

@@ -274,7 +274,25 @@ async function main() {
   api.handleEvent({ event: "Connected", peer_device_id: "dev-x", local_overlay_ip: "10.88.0.1", peer_overlay_ip: "10.88.0.2" });
   check("Connected 事件 → refreshRecent（记录 recent）", called === true);
   check("Connected 事件视图切到 connected", S.view === "connected");
+  check("Connected 无 path → conn-path 显示 DirectLink（默认）", els["conn-path"].textContent === "DirectLink");
   api.refreshRecent = orig;
+
+  // 9b) M1-2：Connected path=n2n → UI 显示 N2N Relay（普通 UI 不暴露技术术语）
+  resetState();
+  api.refreshRecent = async () => {};
+  api.handleEvent({ event: "Connected", peer_device_id: "dev-x", local_overlay_ip: "10.88.0.1", peer_overlay_ip: "10.88.0.2", path: "n2n" });
+  check("Connected path=n2n → conn-path 显示 N2N Relay", els["conn-path"].textContent === "N2N Relay");
+  check("Connected path=directlink → conn-path 显示 DirectLink",
+    (api.handleEvent({ event: "Connected", peer_device_id: "dev-y", local_overlay_ip: "10.88.0.3", peer_overlay_ip: "10.88.0.4", path: "directlink" }),
+     els["conn-path"].textContent === "DirectLink"));
+  api.refreshRecent = orig;
+
+  // 9c) M1-2：GetStatus current_path → 首页路径指示（n2n → N2N Relay；空 → --）
+  resetState();
+  api.renderStatus({ state: "CONNECTED", user_facing: "已连接", device_id: "dev-a", current_path: "n2n" });
+  check("renderStatus current_path=n2n → home-path 显示 N2N Relay", els["home-path"].textContent === "N2N Relay");
+  api.renderStatus({ state: "READY", user_facing: "已就绪", device_id: "dev-a", current_path: "" });
+  check("renderStatus current_path 空 → home-path 显示 --", els["home-path"].textContent === "--");
 
   // 10) ERROR_TEXT 存在
   check("ERROR_TEXT 有 LIST_RECENT_FAILED", !!ERROR_TEXT && typeof ERROR_TEXT.LIST_RECENT_FAILED === "string");

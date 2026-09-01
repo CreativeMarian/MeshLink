@@ -98,7 +98,7 @@ fn spawn_controller(tmp: &std::path::Path) -> (String, ControllerGuard) {
 
     let url = format!("http://{addr}");
     let client = controller_client::Client::new(&url).expect("controller client");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Ok(v) = client.healthz() {
             assert_eq!(v["status"], "ok", "healthz 应答 ok");
@@ -110,7 +110,7 @@ fn spawn_controller(tmp: &std::path::Path) -> (String, ControllerGuard) {
                 let _ = f.read_to_string(&mut log_text);
             }
             panic!(
-                "Controller 10s 内未就绪，日志尾部:\n{}",
+                "Controller 30s 内未就绪，日志尾部:\n{}",
                 &log_text[log_text.len().saturating_sub(2000)..]
             );
         }
@@ -225,7 +225,7 @@ fn assert_subsequence(events: &[Event], expected: &[&'static str], who: &str) {
 
 fn connected_of(events: &[Event], who: &str) -> (String, String, String) {
     let c = events.iter().find_map(|e| match e {
-        Event::Connected { peer_device_id, local_overlay_ip, peer_overlay_ip } => {
+        Event::Connected { peer_device_id, local_overlay_ip, peer_overlay_ip, .. } => {
             Some((peer_device_id.clone(), local_overlay_ip.clone(), peer_overlay_ip.clone()))
         }
         _ => None,

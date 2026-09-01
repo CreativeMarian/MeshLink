@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use transport_api::{Endpoint, Ipv4Packet, PeerHints, PeerId, TransportConfig, TransportProvider};
 use transport_n2n::{N2NParams, N2NTransport, SupernodeEndpoint};
-use mesh_common::error::{ErrorCode as MeshErrorCode, MeshError};
+use mesh_common::error::MeshError;
 
 /// Overlay 后端选择（生产 Wintun / 自动化测试 Mock）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +62,9 @@ pub struct AgentConfig {
     pub n2n_supernodes: Vec<SupernodeEndpoint>,
     /// M1-2：N2N community（默认 = network_id）。
     pub n2n_community: Option<String>,
+    /// M1-2 测试/诊断注入：`MESHLINK_FORCE_DIRECTLINK_FAIL=1` 时 DirectLink
+    /// 建链立即失败（触发 Auto 路径自动回退 N2N），用于自动集成测试确定性覆盖。
+    pub force_directlink_fail: bool,
 }
 
 impl Default for AgentConfig {
@@ -85,6 +88,7 @@ impl Default for AgentConfig {
             wait_peer_timeout: Duration::from_secs(600),
             n2n_supernodes: Vec::new(),
             n2n_community: None,
+            force_directlink_fail: false,
         }
     }
 }
@@ -125,6 +129,9 @@ pub(crate) enum CommandKind {
     ListRecentConnections,
     DeleteRecentConnection { remote_device_id: String },
     Shutdown,
+    /// M1-2：注册本机（监督者拉起的）DEV/自托管 Supernode 到 Controller Registry，
+    /// 随后刷新本机 N2N 池（credential 由 Agent 持有）。
+    RegisterLocalSupernode { sn_id: String, host: String, port: u16, priority: u32 },
 }
 
 /// M1-2 强制传输路径（Force DirectLink / Force N2N；Auto = 默认 DirectLink，
@@ -246,6 +253,9 @@ pub(crate) struct AgentCore {
     pub friend_online: Mutex<std::collections::HashMap<String, String>>,
     /// M1-1.5：runtime 临时目录（active_session/quick_code 等；空 = 未启用）。
     pub runtime: RuntimeState,
+    /// M1-2：当前连接实际路径（"" / "directlink" / "n2n"）；由建链流程在 CONNECTED
+    /// 时写入，UI 经 GetStatus.current_path 展示 DirectLink / N2N Relay。
+    pub current_path: Mutex<String>,
 }
 
 impl AgentCore {
@@ -270,6 +280,12 @@ impl AgentCore {
         tracing::info!(target: "agent", state = ?state, "状态切换");
     }
 
+    /// M1-2：记录当前连接实际路径（directlink | n2n），并同步进状态快照。
+    pub fn set_current_path(&self, path: &str) {
+        *self.current_path.lock().unwrap() = path.to_string();
+        // status 顶层 current_path 由 snapshot() 实时读取，无需额外写回。
+    }
+
     pub fn snapshot(&self) -> StatusSnapshot {
         let mut snap = self.status.lock().unwrap().clone();
         let state = snap.state;
@@ -282,6 +298,8 @@ impl AgentCore {
             status: state.wire(),
             expires_at: s.expires_at.clone(),
         });
+        // M1-2：当前连接实际路径（directlink | n2n；未连接 = ""）。
+        snap.current_path = self.current_path.lock().unwrap().clone();
         snap
     }
 
@@ -337,6 +355,8 @@ impl AgentCore {
         self.abort_session_resources();
         // M1-1.5：会话结束/取消即清 session 类 runtime 临时文件。
         self.runtime.clear_session();
+        // M1-2：会话结束/取消 → 当前路径复位（UI 不再显示 DirectLink / N2N Relay）。
+        *self.current_path.lock().unwrap() = String::new();
         if had {
             self.set_state(AgentState::Ready);
             let _ = self.event_tx.send(Event::Disconnected { reason: reason.into() });
@@ -405,7 +425,7 @@ impl AgentCore {
                 );
                 tokio::spawn(async move {
                     if is_n2n {
-                        creator_flow_n2n_with_view(core, view).await;
+                        creator_flow_n2n_with_view(core, view, false).await;
                     } else {
                         creator_flow_with_view(core, view, false).await;
                     }
@@ -743,6 +763,35 @@ impl AgentCore {
             CommandKind::GetN2NStatus => {
                 let _ = reply.send(ok(n2n_status_json(&self)));
             }
+            CommandKind::RegisterLocalSupernode { sn_id, host, port, priority } => {
+                let client = self.controller();
+                let credential = self.credential();
+                // 注册本机（监督者拉起的）Supernode 到 Controller Registry。
+                match client.register_supernode(&credential, &sn_id, &host, port, priority) {
+                    Ok(()) => {
+                        // 注册成功后刷新本机 N2N Supernode 池（含新登记节点）。
+                        match client.list_supernodes(&credential) {
+                            Ok(sns) if !sns.is_empty() => {
+                                let eps: Vec<SupernodeEndpoint> = sns
+                                    .iter()
+                                    .map(|s| SupernodeEndpoint {
+                                        id: s.id.clone(),
+                                        host: s.host.clone(),
+                                        port: s.port,
+                                        priority: s.priority.min(u8::MAX as u32) as u8,
+                                    })
+                                    .collect();
+                                self.n2n.set_supernodes(eps);
+                            }
+                            _ => {}
+                        }
+                        let _ = reply.send(ok(serde_json::json!({ "registered": true, "id": sn_id, "host": host, "port": port })));
+                    }
+                    Err(e) => {
+                        let _ = reply.send(error_response(id, "SUPERNODE_REGISTER_FAILED", format!("{e}")));
+                    }
+                }
+            }
             CommandKind::Shutdown => {
                 self.teardown_session("shutdown");
                 self.set_state(AgentState::Stopped);
@@ -917,6 +966,7 @@ impl MeshAgent {
             poll_seq: Mutex::new(0),
             friend_online: Mutex::new(std::collections::HashMap::new()),
             runtime: RuntimeState::new(cfg.runtime_dir.clone()),
+            current_path: Mutex::new(String::new()),
         });
 
         let runtime = Arc::new(
@@ -1030,6 +1080,10 @@ impl AgentHandle {
             Command::Heartbeat => self.dispatch(id, CommandKind::Heartbeat),
             Command::SetPath { path } => self.dispatch(id, CommandKind::SetPath { path }),
             Command::GetN2NStatus => self.dispatch(id, CommandKind::GetN2NStatus),
+            Command::RegisterLocalSupernode { sn_id, host, port, priority } => self.dispatch(
+                id,
+                CommandKind::RegisterLocalSupernode { sn_id, host, port, priority },
+            ),
             Command::ListRecentConnections => self.dispatch(id, CommandKind::ListRecentConnections),
             Command::DeleteRecentConnection { remote_device_id } => {
                 self.dispatch(id, CommandKind::DeleteRecentConnection { remote_device_id })
@@ -1117,6 +1171,9 @@ impl AgentHandle {
             "selected_pair": selected,
             "stun": stun,
             "overlay": overlay_json,
+            // M1-2：当前连接实际路径（directlink | n2n | ""）与 N2N 状态。
+            "current_path": snap.current_path,
+            "n2n": n2n_status_json(core),
         })
     }
 
@@ -1496,6 +1553,41 @@ fn n2n_status_json(core: &Arc<AgentCore>) -> serde_json::Value {
 }
 
 // ---------------------------------------------------------------------------
+// M1-2：DirectLink 建链失败 → Auto 路径自动回退 N2N Supernode Relay
+// ---------------------------------------------------------------------------
+
+impl AgentCore {
+    /// Auto 路径 + N2N 池可用时允许 DirectLink → N2N 自动回退。
+    fn auto_fallback_ready(&self) -> bool {
+        *self.path.lock().unwrap() == PathChoice::Auto && !self.n2n.supernodes().is_empty()
+    }
+}
+
+/// creator：DirectLink 建链失败（Auto）→ 清理 DirectLink 会话资源后转 N2N creator。
+async fn creator_fallback_to_n2n(core: Arc<AgentCore>, view: SessionView, friend: bool, code: &str, msg: String) {
+    if !core.auto_fallback_ready() {
+        core.fail(code, msg);
+        return;
+    }
+    tracing::warn!(target: "agent", from = code, "DirectLink 建链失败 → 自动回退 N2N Supernode（creator）");
+    core.abort_session_resources();
+    let _ = core.event_tx.send(Event::PathChanged { detail: "n2n-fallback".into() });
+    creator_flow_n2n_with_view(core, view, friend).await;
+}
+
+/// joiner：DirectLink 建链失败（Auto）→ 清理 DirectLink 会话资源后转 N2N joiner。
+async fn joiner_fallback_to_n2n(core: Arc<AgentCore>, view: SessionView, friend: bool, code: &str, msg: String) {
+    if !core.auto_fallback_ready() {
+        core.fail(code, msg);
+        return;
+    }
+    tracing::warn!(target: "agent", from = code, "DirectLink 建链失败 → 自动回退 N2N Supernode（joiner）");
+    core.abort_session_resources();
+    let _ = core.event_tx.send(Event::PathChanged { detail: "n2n-fallback".into() });
+    joiner_flow_n2n(core, view, friend).await;
+}
+
+// ---------------------------------------------------------------------------
 // Creator 流程（创建 6 位码 → 等待 joiner → responder Noise → Overlay）
 // ---------------------------------------------------------------------------
 
@@ -1595,11 +1687,24 @@ async fn creator_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend:
     let _ = core.event_tx.send(Event::Punching { track: "A".into() });
 
     // 等 Noise established（joiner 主动握手；严格模式下 msg1 未登记前被拒并重试）。
+    // M1-2：DirectLink 建链超时（Auto）→ 自动回退 N2N；强制 DirectLink 则直接失败。
     let deadline = Instant::now() + core.cfg.handshake_timeout;
     let mut announced = false;
     loop {
         if stop.load(Ordering::Acquire) {
             return core.aborted();
+        }
+        if core.cfg.force_directlink_fail {
+            // 测试/诊断注入：模拟 DirectLink 握手不可达 → 触发 Auto 回退。
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            return creator_fallback_to_n2n(
+                core.clone(),
+                view,
+                friend,
+                "NOISE_HANDSHAKE_TIMEOUT",
+                "Noise IK 握手（MESHLINK_FORCE_DIRECTLINK_FAIL 注入）".into(),
+            )
+            .await;
         }
         let report = core.transport.crypto_report(&peer_id);
         if !announced && !report.is_null() {
@@ -1611,12 +1716,19 @@ async fn creator_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend:
             break;
         }
         if Instant::now() > deadline {
-            return core.fail_timeout("NOISE_HANDSHAKE_TIMEOUT", "Noise IK 握手");
+            return creator_fallback_to_n2n(
+                core.clone(),
+                view,
+                friend,
+                "NOISE_HANDSHAKE_TIMEOUT",
+                "Noise IK 握手超时（DirectLink 路径）".into(),
+            )
+            .await;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    finish_connected(core.clone(), peer_id, stop, overlay, core.transport.clone()).await;
+    finish_connected(core.clone(), peer_id, stop, overlay, core.transport.clone(), "directlink").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1685,7 +1797,15 @@ async fn joiner_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend: 
     };
     let eps = endpoints(&peers);
     if eps.is_empty() {
-        return core.fail("DIRECTLINK_FAILED", "对端候选为空（creator 未上线或未上传）");
+        // M1-2：DirectLink 不可用（无对端候选）→ Auto 自动回退 N2N。
+        return joiner_fallback_to_n2n(
+            core.clone(),
+            view,
+            friend,
+            "DIRECTLINK_FAILED",
+            "对端候选为空（creator 未上线或未上传）".into(),
+        )
+        .await;
     }
     core.set_state(AgentState::PeerDiscovered);
     let _ = core.event_tx.send(Event::PeerFound { peer_device_id: peer_device.clone() });
@@ -1693,10 +1813,33 @@ async fn joiner_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend: 
     // UDP 打洞（joiner 主动；失败 = DIRECTLINK_FAILED——产品要求）。
     core.set_state(AgentState::Punching);
     let _ = core.event_tx.send(Event::Punching { track: "B".into() });
+    if core.cfg.force_directlink_fail {
+        // 测试/诊断注入：模拟打洞不可达 → 触发 Auto 回退。
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        return joiner_fallback_to_n2n(
+            core.clone(),
+            view,
+            friend,
+            "DIRECTLINK_FAILED",
+            "UDP 打洞（MESHLINK_FORCE_DIRECTLINK_FAIL 注入）".into(),
+        )
+        .await;
+    }
     let hints = PeerHints { endpoints: eps, static_key_fingerprint: None, overlay_mac: None };
     match tokio::time::timeout(core.cfg.punch_timeout, core.transport.connect_peer(peer_id.clone(), hints)).await {
-        Err(_) => return core.fail_timeout("DIRECTLINK_FAILED", "UDP 打洞"),
-        Ok(Err(e)) => return core.fail("DIRECTLINK_FAILED", e),
+        Err(_) => {
+            return joiner_fallback_to_n2n(
+                core.clone(),
+                view,
+                friend,
+                "DIRECTLINK_FAILED",
+                "UDP 打洞超时".into(),
+            )
+            .await
+        }
+        Ok(Err(e)) => {
+            return joiner_fallback_to_n2n(core.clone(), view, friend, "DIRECTLINK_FAILED", e.to_string()).await
+        }
         Ok(Ok(_)) => {}
     }
 
@@ -1708,10 +1851,10 @@ async fn joiner_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend: 
         .start_noise_initiator(&peer_id, core.identity.clone(), &view.network_id, &peer_device, &peer_key)
         .await
     {
-        return core.fail("NOISE_HANDSHAKE_FAILED", e);
+        return joiner_fallback_to_n2n(core.clone(), view, friend, "NOISE_HANDSHAKE_FAILED", e.to_string()).await;
     }
 
-    finish_connected(core.clone(), peer_id, stop, overlay, core.transport.clone()).await;
+    finish_connected(core.clone(), peer_id, stop, overlay, core.transport.clone(), "directlink").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1719,7 +1862,8 @@ async fn joiner_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend: 
 // ---------------------------------------------------------------------------
 
 /// N2N Creator：Controller 会话 + N2N responder（等 joiner 经 SN 中继发 msg1）。
-async fn creator_flow_n2n_with_view(core: Arc<AgentCore>, view: SessionView) {
+/// `friend`：好友会话标记（DirectLink 建链失败自动回退时透传，保留好友事件语义）。
+async fn creator_flow_n2n_with_view(core: Arc<AgentCore>, view: SessionView, friend: bool) {
     // 前置：N2N Supernode 池必须可用。
     if core.n2n.supernodes().is_empty() {
         return core.fail("N2N_SUPERNODE_UNAVAILABLE", "未配置 N2N Supernode（Controller Registry 未下发）");
@@ -1748,7 +1892,7 @@ async fn creator_flow_n2n_with_view(core: Arc<AgentCore>, view: SessionView) {
             },
             stop: stop.clone(),
             overlay: overlay.clone(),
-            friend_session: false,
+            friend_session: friend,
         });
     }
 
@@ -1828,18 +1972,19 @@ async fn creator_flow_n2n_with_view(core: Arc<AgentCore>, view: SessionView) {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    finish_connected(core.clone(), n2n_peer, stop, overlay, core.n2n.clone()).await;
+    finish_connected(core.clone(), n2n_peer, stop, overlay, core.n2n.clone(), "n2n").await;
 }
 
 // ---------------------------------------------------------------------------
-// M1-2：N2N Joiner 流程（Force N2N）
+// M1-2：N2N Joiner 流程（Force N2N / Auto 回退）
 // ---------------------------------------------------------------------------
 
-async fn joiner_flow_n2n(core: Arc<AgentCore>, view: SessionView, _friend: bool) {
+/// N2N Joiner：Supernode 中继路径（Force N2N 直入 / Auto 模式下 DirectLink 失败回退）。
+/// `friend`：好友会话标记（保留好友事件语义；FriendConnected 由 AcceptConnectionRequest 调用方发送）。
+async fn joiner_flow_n2n(core: Arc<AgentCore>, view: SessionView, friend: bool) {
     if core.n2n.supernodes().is_empty() {
         return core.fail("N2N_SUPERNODE_UNAVAILABLE", "未配置 N2N Supernode（Controller Registry 未下发）");
     }
-    let cred = core.credential();
     let session_id = view.session_id.clone();
 
     let Some(me) = my_member(&view, &core.device_id) else {
@@ -1879,7 +2024,7 @@ async fn joiner_flow_n2n(core: Arc<AgentCore>, view: SessionView, _friend: bool)
             },
             stop: stop.clone(),
             overlay: overlay.clone(),
-            friend_session: false,
+            friend_session: friend,
         });
     }
 
@@ -1892,7 +2037,6 @@ async fn joiner_flow_n2n(core: Arc<AgentCore>, view: SessionView, _friend: bool)
 
     // 先解析 creator 在 SN 的成员（creator 需先登记 → 注册竞态用重试吸收）。
     let conn_deadline = Instant::now() + core.cfg.handshake_timeout;
-    let mut discovered = false;
     loop {
         if stop.load(Ordering::Acquire) {
             return core.aborted();
@@ -1901,18 +2045,12 @@ async fn joiner_flow_n2n(core: Arc<AgentCore>, view: SessionView, _friend: bool)
             return core.fail_timeout("N2N_PEER_CONNECT_FAILED", "等待 creator 在 Supernode 上线");
         }
         match core.n2n.connect_peer(n2n_peer.clone(), PeerHints::default()) {
-            Ok(_) => {
-                discovered = true;
-                break;
-            }
+            Ok(_) => break,
             Err(e) => {
                 tracing::debug!(target: "agent", err = %e, "connect_peer 未命中 creator，重试");
                 tokio::time::sleep(Duration::from_millis(400)).await;
             }
         }
-    }
-    if !discovered {
-        return core.fail("N2N_PEER_CONNECT_FAILED", "creator 在 Supernode 未上线");
     }
 
     if let Err(e) = core
@@ -1938,7 +2076,7 @@ async fn joiner_flow_n2n(core: Arc<AgentCore>, view: SessionView, _friend: bool)
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    finish_connected(core.clone(), n2n_peer, stop, overlay, core.n2n.clone()).await;
+    finish_connected(core.clone(), n2n_peer, stop, overlay, core.n2n.clone(), "n2n").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1951,6 +2089,7 @@ async fn finish_connected(
     stop: Arc<AtomicBool>,
     overlay: Arc<Mutex<Box<dyn OverlayBackend>>>,
     io: Arc<dyn SessionPacketIo>,
+    path_label: &'static str,
 ) {
     let (local_ip, peer_ip, subnet, prefix, adapter) = {
         let s = core.session.lock().unwrap();
@@ -2067,9 +2206,10 @@ async fn finish_connected(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // 规格十二 8 条件全部满足（1 Controller peer verified / 2 DirectLink path /
+    // 规格十二 8 条件全部满足（1 Controller peer verified / 2 path established /
     // 3 Noise mutual identity / 4 Noise transport / 5 Overlay ready /
     // 6 Overlay IP / 7 Route / 8 smoke passed）→ CONNECTED。
+    core.set_current_path(path_label);
     {
         let mut s = core.session.lock().unwrap();
         if let Some(s) = s.as_mut() {
@@ -2085,11 +2225,13 @@ async fn finish_connected(
         },
         local_overlay_ip: local_ip.to_string(),
         peer_overlay_ip: peer_ip.to_string(),
+        path: path_label.into(),
     });
     tracing::info!(
         target: "agent",
         local = %local_ip,
         peer = %peer_ip,
+        path = path_label,
         "CONNECTED：规格十二 8 条件全部满足"
     );
 
@@ -2097,10 +2239,6 @@ async fn finish_connected(
     // 对端名称/指纹由 Controller 从 Registry 读取（本端只传 device_id + overlay_ip + path）。
     {
         let peer_id = core.session.lock().unwrap().as_ref().map(|s| s.peer.device_id.clone()).unwrap_or_default();
-        let path_label = match core.path.lock().unwrap().clone() {
-            PathChoice::N2N => "n2n",
-            _ => "directlink",
-        };
         if !peer_id.is_empty() {
             let core = core.clone();
             let client = core.controller();

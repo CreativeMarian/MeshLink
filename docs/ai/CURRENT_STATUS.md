@@ -1,4 +1,4 @@
-﻿# MeshLink Current Status
+# MeshLink Current Status
 
 
 ## Current Version
@@ -26,15 +26,21 @@ v0.1.0
 
 [x] Process lifecycle
 
+[x] M1-2 N2N + Supernode（含 DirectLink 失败自动回退 N2N Relay）
+
 
 ## Current Development
 
-M1-2 N2N + Supernode
+M1-3 Path Manager（DirectLink ↔ N2N 自动选路）
 
 
 ## Next Milestones
 
 M1-3 Path Manager
+
+M1-4 HFS 文件共享
+
+M1-5 MeshTransfer 高速传输
 
 M2 File Transfer
 

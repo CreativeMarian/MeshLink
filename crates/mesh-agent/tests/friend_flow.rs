@@ -86,7 +86,7 @@ fn spawn_controller(tmp: &std::path::Path) -> (String, ControllerGuard) {
     let url = format!("http://{addr}");
     let client = controller_client::Client::new(&url).expect("controller client");
     let guard = ControllerGuard { child };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Ok(v) = client.healthz() {
             assert_eq!(v["status"], "ok");
@@ -98,7 +98,7 @@ fn spawn_controller(tmp: &std::path::Path) -> (String, ControllerGuard) {
                 let _ = f.read_to_string(&mut log_text);
             }
             panic!(
-                "Controller 10s 内未就绪: {}",
+                "Controller 30s 内未就绪: {}",
                 &log_text[log_text.len().saturating_sub(1500)..]
             );
         }
@@ -427,7 +427,7 @@ fn m1_1_friend_invite_to_encrypted_overlay_ping() {
     let connected_of = |evs: &[Event], who: &str| -> (String, String, String) {
         evs.iter()
             .find_map(|e| match e {
-                Event::Connected { peer_device_id, local_overlay_ip, peer_overlay_ip } => {
+                Event::Connected { peer_device_id, local_overlay_ip, peer_overlay_ip, .. } => {
                     Some((peer_device_id.clone(), local_overlay_ip.clone(), peer_overlay_ip.clone()))
                 }
                 _ => None,

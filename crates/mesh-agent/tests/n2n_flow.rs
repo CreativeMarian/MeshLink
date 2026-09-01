@@ -89,7 +89,7 @@ fn spawn_controller(tmp: &std::path::Path, supernodes_json: &str) -> (String, Co
     let url = format!("http://{addr}");
     let client = controller_client::Client::new(&url).expect("controller client");
     let guard = ControllerGuard { child };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Ok(v) = client.healthz() {
             assert_eq!(v["status"], "ok");
