@@ -97,6 +97,12 @@ pub struct StatusSnapshot {
     /// DirectLink / N2N Relay，与 forced_path 区分——强制选择 vs 实际生效）。
     #[serde(default)]
     pub current_path: String,
+    /// 最近一次流程/启动失败码（如 CONTROLLER_UNREACHABLE）；无失败 = None。
+    /// 诊断中心据此展示明确原因（如"无法连接到网络服务"），而非笼统"连接失败"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_message: Option<String>,
 }
 
 /// 顶层活动会话（GetStatus data.active_session）。
@@ -122,6 +128,8 @@ impl StatusSnapshot {
             session: None,
             active_session: None,
             current_path: String::new(),
+            last_error_code: None,
+            last_error_message: None,
         }
     }
 }
@@ -177,6 +185,8 @@ mod tests {
             }),
             active_session: None,
             current_path: "directlink".into(),
+            last_error_code: None,
+            last_error_message: None,
         };
         let s = serde_json::to_string(&snap).unwrap();
         assert!(s.contains(r#""state":"CONNECTED""#));

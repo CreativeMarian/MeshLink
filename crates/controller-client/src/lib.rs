@@ -19,7 +19,7 @@ use mesh_common::{ErrorCode, MeshError};
 use rustls_pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -310,6 +310,16 @@ pub struct Client {
     port: u16,
     /// https 时的 rustls 配置（None + Https 只出现在系统根加载失败的延迟错误）。
     tls: Option<Arc<rustls::ClientConfig>>,
+    /// HTTPS 代理（HTTP CONNECT 隧道）。环境变量/Windows 系统代理解析；
+    /// 代理只用于 https（公网 Controller）——DEV 明文回环不走代理。
+    proxy: Option<ProxyConfig>,
+}
+
+/// HTTP 代理配置（仅支持 HTTP/HTTPS CONNECT 隧道；socks 不支持）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyConfig {
+    pub host: String,
+    pub port: u16,
 }
 
 /// 解析 base_url：`scheme://host[:port]`。
@@ -378,7 +388,7 @@ impl Client {
             Scheme::HttpLocal => None,
             Scheme::Https => Some(build_client_config(None)?),
         };
-        Ok(Self { scheme, host, port, tls })
+        Ok(Self { scheme, host, port, tls, proxy: resolve_proxy() })
     }
 
     /// 固定信任 CA（PEM 文件路径）——自签 Controller 或私有 CA 场景。
@@ -394,8 +404,14 @@ impl Client {
                 host,
                 port,
                 tls: Some(build_client_config(Some(ca_pem))?),
+                proxy: resolve_proxy(),
             }),
         }
+    }
+
+    /// 当前生效的 HTTPS 代理（诊断用；None = 直连）。
+    pub fn proxy(&self) -> Option<&ProxyConfig> {
+        self.proxy.as_ref()
     }
 
     /// DEV/PROD 判定（诊断与测试用）。
@@ -776,7 +792,7 @@ impl Client {
         // 单一分派：DEV 走明文，PRODUCTION 走 TLS——https 失败绝不回落 http。
         let raw = match self.scheme {
             Scheme::HttpLocal => {
-                let mut stream = TcpStream::connect(&addr)
+                let mut stream = connect_with_timeout(&addr, IO_TIMEOUT)
                     .map_err(|e| ApiError::transport(format!("连接 Controller {addr} 失败: {e}")))?;
                 set_timeouts(&stream)?;
                 write_request(&mut stream, req.as_bytes(), body)?;
@@ -789,6 +805,8 @@ impl Client {
 
     /// PRODUCTION 传输：rustls over TcpStream（每请求新建 TLS 连接——
     /// 信令频率极低，简单可靠优先）。失败只报 TRANSPORT 错误，无降级路径。
+    /// 已配置 HTTPS 代理时先经 HTTP CONNECT 隧道（v2rayN/Clash 规则模式下
+    /// agent 直连被网络环境阻断时的出路），再在隧道上跑 TLS。
     fn call_tls(&self, addr: &str, req_head: &[u8], body: Option<&[u8]>) -> ApiResult<Vec<u8>> {
         use rustls::Stream;
         let config = self
@@ -799,13 +817,128 @@ impl Client {
             .map_err(|_| ApiError::transport(format!("TLS SNI 主机名非法: {}", self.host)))?;
         let mut conn = rustls::ClientConnection::new(Arc::clone(config), server_name)
             .map_err(|e| ApiError::transport(format!("TLS 客户端初始化失败: {e}")))?;
-        let mut sock = TcpStream::connect(addr)
-            .map_err(|e| ApiError::transport(format!("连接 Controller {addr} 失败: {e}")))?;
-        set_timeouts(&sock)?;
+        let mut sock = match &self.proxy {
+            Some(p) => {
+                let pa = format!("{}:{}", p.host, p.port);
+                let mut s = connect_with_timeout(&pa, IO_TIMEOUT).map_err(|e| {
+                    ApiError::transport(format!("连接 HTTPS 代理 {pa} 失败: {e}"))
+                })?;
+                set_timeouts(&s)?;
+                connect_proxy(&mut s, addr)?;
+                s
+            }
+            None => {
+                let s = connect_with_timeout(addr, IO_TIMEOUT).map_err(|e| {
+                    ApiError::transport(format!("连接 Controller {addr} 失败: {e}"))
+                })?;
+                set_timeouts(&s)?;
+                s
+            }
+        };
         let mut tls = Stream::new(&mut conn, &mut sock);
         write_request(&mut tls, req_head, body)?;
         read_to_end(&mut tls)
     }
+}
+
+/// HTTP CONNECT 隧道（TLS 前置）：向代理请求建立到 `target`（host:port）的隧道，
+/// 读到 200 即建立；非 200 / 代理无响应 → transport 错误。
+fn connect_proxy(stream: &mut TcpStream, target: &str) -> ApiResult<()> {
+    use std::io::{Read, Write};
+    let req = format!(
+        "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+    );
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| ApiError::transport(format!("发送代理 CONNECT 失败: {e}")))?;
+    let mut resp = Vec::new();
+    let mut byte = [0u8; 1];
+    while !resp.windows(4).any(|w| w == b"\r\n\r\n") {
+        if resp.len() > 8192 {
+            return Err(ApiError::transport("代理 CONNECT 响应头过长"));
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => resp.push(byte[0]),
+            Err(e) => return Err(ApiError::transport(format!("读取代理 CONNECT 响应失败: {e}"))),
+        }
+    }
+    let head = String::from_utf8_lossy(&resp);
+    let code = head.split_whitespace().nth(1).unwrap_or("000").to_string();
+    if code != "200" {
+        return Err(ApiError::transport(format!("代理 CONNECT 失败（HTTP {code}）")));
+    }
+    Ok(())
+}
+
+/// 解析代理地址（支持 `host:port` 或 `http://host:port`；忽略 user:pass 与 socks 前缀）。
+fn parse_proxy_addr(raw: &str) -> Option<ProxyConfig> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let body = raw
+        .strip_prefix("http://")
+        .or_else(|| raw.strip_prefix("https://"))
+        .or_else(|| {
+            if raw.starts_with("socks") {
+                None
+            } else {
+                Some(raw)
+            }
+        })?;
+    // 忽略 user:pass@（第一版不做代理认证）。
+    let body = body.rsplit_once('@').map(|(_, h)| h).unwrap_or(body);
+    let (host, port) = match body.rsplit_once(':') {
+        Some((h, p)) => (h.trim(), p.trim().parse::<u16>().ok()?),
+        None => (body.trim(), 0),
+    };
+    if host.is_empty() || port == 0 {
+        return None;
+    }
+    Some(ProxyConfig { host: host.to_string(), port })
+}
+
+/// 生效 HTTPS 代理：`MESHLINK_HTTPS_PROXY`（专属覆盖）→ `HTTPS_PROXY`/`https_proxy`
+/// → `ALL_PROXY` → Windows 系统代理（ProxyEnable=1 时取 ProxyServer 的 https= 或整体）。
+fn resolve_proxy() -> Option<ProxyConfig> {
+    for var in ["MESHLINK_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
+        if let Ok(v) = std::env::var(var) {
+            if let Some(p) = parse_proxy_addr(&v) {
+                return Some(p);
+            }
+        }
+    }
+    windows_system_proxy()
+}
+
+/// Windows 系统代理（HKCU Internet Settings：ProxyEnable=1 时 ProxyServer）。
+#[cfg(windows)]
+fn windows_system_proxy() -> Option<ProxyConfig> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        .ok()?;
+    let enable: u32 = key.get_value("ProxyEnable").ok()?;
+    if enable == 0 {
+        return None;
+    }
+    let server: String = key.get_value("ProxyServer").ok()?;
+    // ProxyServer 可能是 `https=127.0.0.1:10809;http=...` 或单一 `127.0.0.1:10809`。
+    let pick = server
+        .split(';')
+        .map(|s| s.trim())
+        .find(|s| s.starts_with("https="))
+        .map(|s| s.trim_start_matches("https=").to_string())
+        .unwrap_or_else(|| server.clone());
+    parse_proxy_addr(&pick)
+}
+
+#[cfg(not(windows))]
+fn windows_system_proxy() -> Option<ProxyConfig> {
+    None
 }
 
 fn set_timeouts(stream: &TcpStream) -> ApiResult<()> {
@@ -813,6 +946,33 @@ fn set_timeouts(stream: &TcpStream) -> ApiResult<()> {
         .set_read_timeout(Some(IO_TIMEOUT))
         .and_then(|_| stream.set_write_timeout(Some(IO_TIMEOUT)))
         .map_err(|e| ApiError::transport(format!("设置超时失败: {e}")))
+}
+
+/// 带超时的 TCP 连接（`std::TcpStream::connect` 无超时——在 IPv6 不可达/路由黑洞的
+/// 网络（常见于虚拟机 NAT + AAAA 记录）下 SYN 无响应会**无限挂起**，导致 agent 永远卡在
+/// ControllerConnecting 而无 healthz 错误日志）。同时**优先 IPv4**：浏览器走 Happy
+/// Eyeballs 能通而 agent 卡住的正因就是 agent 先连了不可达的 IPv6 地址。
+fn connect_with_timeout(addr: &str, timeout: Duration) -> ApiResult<TcpStream> {
+    let iter = addr
+        .to_socket_addrs()
+        .map_err(|e| ApiError::transport(format!("解析 {addr} 失败: {e}")))?;
+    let addrs: Vec<SocketAddr> = iter.collect();
+    // IPv4 优先；IPv6 仅 IPv4 全部失败后尝试。
+    let mut order: Vec<&SocketAddr> = addrs.iter().filter(|a| a.is_ipv4()).collect();
+    order.extend(addrs.iter().filter(|a| a.is_ipv6()));
+    if order.is_empty() {
+        return Err(ApiError::transport(format!("{addr} 无可连接地址")));
+    }
+    let mut last: Option<std::io::Error> = None;
+    for a in order {
+        match TcpStream::connect_timeout(a, timeout) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(ApiError::transport(format!(
+        "连接 {addr} 失败（每个地址超时 {timeout:?}）: {last:?}"
+    )))
 }
 
 fn write_request<W: Write>(w: &mut W, head: &[u8], body: Option<&[u8]>) -> ApiResult<()> {
@@ -1035,6 +1195,9 @@ pub fn decode_key32(s: &str) -> Option<[u8; 32]> {
 mod tests {
     use super::*;
 
+    /// 串行化依赖进程级 env 的测试（并行会互相污染）。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn has_complete_response_content_length() {
         // 头 + 完整 Content-Length 体 → 完整。
@@ -1211,6 +1374,13 @@ mod tests {
 
     #[test]
     fn https_roundtrip_with_pinned_ca() {
+        // env 代理解析是进程级的，与代理 env 测试互斥（避免并行污染导致误连代理）。
+        let _env = ENV_LOCK.lock().unwrap();
+        for v in ["MESHLINK_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
+            unsafe {
+                std::env::remove_var(v);
+            }
+        }
         let tmp = std::env::temp_dir().join(format!(
             "meshlink-tls-test-{}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
@@ -1224,5 +1394,152 @@ mod tests {
         assert_eq!(resp, serde_json::json!({"ok": true}));
         handle.join().expect("server thread");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ---- HTTPS 代理（HTTP CONNECT 隧道）----
+
+    /// 极简 HTTP CONNECT 代理（测试用）：接受 CONNECT，连上游，200 后双向转发。
+    fn spawn_connect_proxy() -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind proxy");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut c) = stream {
+                    let mut buf = Vec::new();
+                    let mut b = [0u8; 1];
+                    loop {
+                        if c.read(&mut b).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        buf.push(b[0]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&buf);
+                    let target = head
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("");
+                    if target.is_empty() {
+                        continue;
+                    }
+                    let (host, port) = target
+                        .rsplit_once(':')
+                        .map(|(h, p)| (h.to_string(), p.parse().unwrap_or(443)))
+                        .unwrap_or((target.to_string(), 443));
+                    let Ok(mut upstream) = std::net::TcpStream::connect((host.as_str(), port)) else {
+                        continue;
+                    };
+                    let _ = c.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n");
+                    let mut c2 = c.try_clone().expect("clone");
+                    let mut u2 = upstream.try_clone().expect("clone");
+                    let t1 = std::thread::spawn(move || {
+                        let _ = std::io::copy(&mut c2, &mut u2);
+                    });
+                    let _ = std::io::copy(&mut upstream, &mut c);
+                    let _ = t1.join();
+                }
+            }
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn https_roundtrip_via_connect_proxy() {
+        let _env = ENV_LOCK.lock().unwrap();
+        for v in ["MESHLINK_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
+            unsafe {
+                std::env::remove_var(v);
+            }
+        }
+        let tmp = std::env::temp_dir().join(format!(
+            "meshlink-tls-proxy-test-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).expect("mkdir");
+        let ca_path = tmp.join("ca.pem");
+        let (tls_port, tls_handle) = spawn_tls_healthz(&ca_path);
+        let (proxy_port, proxy_handle) = spawn_connect_proxy();
+        unsafe {
+            std::env::set_var("MESHLINK_HTTPS_PROXY", format!("127.0.0.1:{proxy_port}"));
+        }
+        let client = Client::with_ca_pem(&format!("https://127.0.0.1:{tls_port}"), &ca_path)
+            .expect("client with pinned CA");
+        let resp = client.healthz().expect("经代理 https 请求成功");
+        assert_eq!(resp, serde_json::json!({"ok": true}));
+        unsafe {
+            std::env::remove_var("MESHLINK_HTTPS_PROXY");
+        }
+        tls_handle.join().expect("tls server");
+        drop(proxy_handle); // 代理线程 detached（转发循环可能半开阻塞，不 join 防挂起）。
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_proxy_addr_formats() {
+        assert_eq!(
+            parse_proxy_addr("127.0.0.1:10809"),
+            Some(ProxyConfig { host: "127.0.0.1".into(), port: 10809 })
+        );
+        assert_eq!(
+            parse_proxy_addr("http://127.0.0.1:10809"),
+            Some(ProxyConfig { host: "127.0.0.1".into(), port: 10809 })
+        );
+        assert_eq!(
+            parse_proxy_addr("  https://proxy.example:3128  "),
+            Some(ProxyConfig { host: "proxy.example".into(), port: 3128 })
+        );
+        // user:pass@ 忽略认证部分（第一版不支持代理认证）。
+        assert_eq!(
+            parse_proxy_addr("http://user:pass@127.0.0.1:10809"),
+            Some(ProxyConfig { host: "127.0.0.1".into(), port: 10809 })
+        );
+        // socks 不支持 → None。
+        assert_eq!(parse_proxy_addr("socks5://127.0.0.1:10808"), None);
+        // 空/非法 → None。
+        assert_eq!(parse_proxy_addr(""), None);
+        assert_eq!(parse_proxy_addr("   "), None);
+        assert_eq!(parse_proxy_addr("127.0.0.1"), None, "缺端口应拒绝");
+        assert_eq!(parse_proxy_addr("127.0.0.1:abc"), None);
+        assert_eq!(parse_proxy_addr(":10809"), None);
+    }
+
+    #[test]
+    fn https_proxy_env_resolves_client_proxy() {
+        // 与 https_roundtrip 互斥（env 是进程级状态，避免并行污染）。
+        let _env = ENV_LOCK.lock().unwrap();
+        // 环境变量生效：MESHLINK_HTTPS_PROXY（专属覆盖）→ 客户端代理字段可读。
+        unsafe {
+            std::env::set_var("MESHLINK_HTTPS_PROXY", "127.0.0.1:10809");
+        }
+        let client = Client::new("https://controller.bpbpanel.cc.cd").expect("https client");
+        assert_eq!(
+            client.proxy(),
+            Some(&ProxyConfig { host: "127.0.0.1".into(), port: 10809 })
+        );
+        unsafe {
+            std::env::remove_var("MESHLINK_HTTPS_PROXY");
+        }
+        // DEV 明文不受代理影响（回环直连）。
+        let dev = Client::new("http://127.0.0.1:18080").expect("dev client");
+        assert!(dev.proxy().is_some() || std::env::var("HTTPS_PROXY").is_err());
+        // HTTPS_PROXY 通用变量也生效。
+        unsafe {
+            std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:10809");
+        }
+        let c2 = Client::new("https://example.com").expect("client");
+        assert_eq!(
+            c2.proxy(),
+            Some(&ProxyConfig { host: "127.0.0.1".into(), port: 10809 })
+        );
+        unsafe {
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("https_proxy");
+            std::env::remove_var("ALL_PROXY");
+            std::env::remove_var("all_proxy");
+        }
     }
 }

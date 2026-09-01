@@ -278,12 +278,13 @@ function renderStatus(snap) {
     $("home-device-card").style.display = "flex";
   }
   // 用户规格四：GetStatus active_session 恢复 6 位码（UI 刷新 / 页面切换 / 窗口重绘）。
+  // 页面切换回来：home/friends → 自动弹回连接码视图；create → 始终刷新码文本与倒计时。
   if (snap.active_session && isValidQuickCode(snap.active_session.code)) {
     S.code = snap.active_session.code;
     const st = snap.active_session.status;
-    if (st === "WAITING_FOR_PEER" || st === "SESSION_CREATING") {
-      if (S.view === "home" || S.view === "friends") showQuickCode(S.code, snap.active_session.expires_at);
-    } else if (S.view === "create" && isValidQuickCode(S.code)) {
+    if (S.view === "home" || S.view === "friends") {
+      if (st === "WAITING_FOR_PEER" || st === "SESSION_CREATING") showQuickCode(S.code, snap.active_session.expires_at);
+    } else if (S.view === "create") {
       $("create-code").textContent = S.code;
       if (snap.active_session.expires_at) startCountdown(snap.active_session.expires_at);
     }
@@ -369,7 +370,8 @@ function handleEvent(ev) {
       break;
 
     case "GatheringCandidates":
-      if (S.view === "home" || S.view === "join" || S.view === "friends") show("progress");
+      // 只在加入/连接流程中切换到进度页；创建方正在查看连接码（create/home）时不得被顶走。
+      if (S.view === "join" || S.view === "progress") show("progress");
       setStep(STEP_DIRECT);
       break;
 
@@ -1350,6 +1352,32 @@ document.addEventListener("click", (e) => {
 
 /* ---------------- 启动 ---------------- */
 
+// 主动等待 agent 进入 READY/CONNECTED（修复实机竞态：boot 先收到 STARTING，而
+// ControllerConnected 广播可能在 UI 订阅 listen() 之前发出、3s 心跳又晚于首屏渲染，
+// 导致首页长期停留在「正在准备连接...」）。boot 里独立启动，不依赖事件/心跳时序。
+function waitReady(timeoutMs = 20000) {
+  const t0 = Date.now();
+  return (async () => {
+    while (Date.now() - t0 < timeoutMs) {
+      try {
+        const r = await ipcRequest("GetStatus");
+        if (r && r.ok && r.data) {
+          const s = r.data;
+          if (s.state === "READY" || s.state === "CONNECTED") {
+            renderStatus(s);
+            loadControllerStatus();
+            refreshFriends();
+            refreshRecent();
+            return true;
+          }
+        }
+      } catch { /* 下次再试 */ }
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    return false; // 超时：由全局心跳（startStatusPoll）继续兜底。
+  })();
+}
+
 async function boot() {
   try {
     const r = await invoke("ensure_agent_running");
@@ -1358,6 +1386,8 @@ async function boot() {
       if (snap.state === "STARTING") {
         // 单例启动中（其他调用者已在进行）：显示"正在准备连接..."。
         renderStatus({ state: "STARTING", user_facing: "正在准备连接..." });
+        // 独立启动等待就绪循环（即使后续 listen 未完成也会继续轮询）。
+        waitReady();
       } else {
         renderStatus(snap);
       }
@@ -1440,6 +1470,7 @@ $("btn-copy-code").addEventListener("click", copyQuickCode);
 $("btn-join-connect").addEventListener("click", startJoin);
 $("btn-join-back").addEventListener("click", () => { hideError($("join-error")); show("home"); });
 $("btn-cancel-progress").addEventListener("click", cancelSession);
+$("btn-cancel-create").addEventListener("click", cancelSession);
 $("btn-disconnect").addEventListener("click", disconnectPeer);
 $("btn-connected-home").addEventListener("click", () => show("home"));
 $("btn-diag").addEventListener("click", openDiagnostics);

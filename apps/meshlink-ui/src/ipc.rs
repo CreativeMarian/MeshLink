@@ -658,8 +658,16 @@ pub fn ipc_request(
 
     match reply_rx.recv_timeout(Duration::from_secs(20)) {
         Ok(Ok(resp)) => Ok(IpcReply::from_response(&resp)),
-        Ok(Err(e)) => Ok(IpcReply::err("AGENT_STOPPED", format!("后台服务断开：{e}"))),
+        Ok(Err(e)) => Ok(parse_wire_error(e)),
         Err(_) => Ok(IpcReply::err("AGENT_TIMEOUT", "后台服务响应超时")),
+    }
+}
+
+/// 解析 ipc_loop 透传的 `CODE:msg` 错误；无前缀则按 AGENT_STOPPED 兜底。
+fn parse_wire_error(e: String) -> IpcReply {
+    match e.split_once(':') {
+        Some((code, msg)) if !code.is_empty() => IpcReply::err(code, msg.trim().to_string()),
+        _ => IpcReply::err("AGENT_STOPPED", e),
     }
 }
 
@@ -999,7 +1007,7 @@ fn send_status(state: &IpcState) -> Result<IpcReply, String> {
         .map_err(|_| "IPC 线程已退出".to_string())?;
     match reply_rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Ok(resp)) => Ok(IpcReply::from_response(&resp)),
-        Ok(Err(e)) => Ok(IpcReply::err("AGENT_STOPPED", format!("后台服务断开：{e}"))),
+        Ok(Err(e)) => Ok(parse_wire_error(e)),
         Err(_) => Ok(IpcReply::err("AGENT_TIMEOUT", "后台服务响应超时")),
     }
 }
@@ -1023,7 +1031,11 @@ fn spawn_agent_process(pipe: &str, runtime: &RuntimeDir, controller_url: &str) -
     let runtime_dir = runtime.dir.to_string_lossy().into_owned();
 
     // Agent 日志落 logs/agent.log（综合修复 P2-1：分类日志目录；无控制台窗口时的诊断来源）。
+    // tracing_subscriber::fmt 默认输出到 **stdout**（mesh-common init_logging），错误走 stderr；
+    // 两个流都追加到同一文件，诊断中心「agent」分类才能看到真实启动/连接日志（此前 stdout
+    // 被丢弃导致 agent.log 永远为空、无法排障）。append 模式双句柄写同一文件是安全的。
     let stderr = append_log_stderr("agent.log");
+    let stdout = append_log_stderr("agent.log");
     append_log("app.log", &format!("[MeshLink] 启动 mesh-agent：controller={controller_url} pipe={pipe}"));
 
     let mut cmd = StdCommand::new(&agent);
@@ -1032,7 +1044,7 @@ fn spawn_agent_process(pipe: &str, runtime: &RuntimeDir, controller_url: &str) -
         .env("MESHLINK_DATA_DIR", data_dir)
         .env("MESHLINK_RUNTIME_DIR", runtime_dir)
         .env("MESHLINK_PIPE_NAME", pipe)
-        .stdout(Stdio::null())
+        .stdout(stdout)
         .stderr(stderr);
     for key in ["MESHLINK_DEVICE_NAME", "MESHLINK_STUN"] {
         if let Ok(val) = std::env::var(key) {
@@ -1084,7 +1096,20 @@ fn ipc_loop(app: &AppHandle, client: &mut PipeClient, job_rx: &Receiver<IpcJob>)
             match job_rx.try_recv() {
                 Ok(IpcJob::Request { req, reply }) => {
                     let resp = client.request_timeout(&req, Duration::from_secs(15));
-                    let _ = reply.send(resp.map_err(|e| e.to_string()));
+                    // 错误分类（截图 EF0001「等待响应超时」修复）：agent 真正断开 → AGENT_STOPPED；
+                    // agent 活着但命令超时（如依赖公网 Controller 的命令在不可达时阻塞）→
+                    // AGENT_TIMEOUT，避免 UI 误报「后台服务断开」。以 "CODE:msg" 透传。
+                    let mapped = match resp {
+                        Ok(r) => Ok(r),
+                        Err(e) => {
+                            if client.is_closed() {
+                                Err(format!("AGENT_STOPPED:后台服务断开：{e}"))
+                            } else {
+                                Err(format!("AGENT_TIMEOUT:连接服务响应超时，请检查网络：{e}"))
+                            }
+                        }
+                    };
+                    let _ = reply.send(mapped);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return,

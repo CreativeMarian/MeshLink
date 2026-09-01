@@ -259,6 +259,9 @@ pub(crate) struct AgentCore {
     /// M1-1.5+（P1-1）：软件重启后恢复的活动会话（data_dir/session_persist.json
     /// 持久化 + Controller 验证）。仅承载 6 位码展示（等待态），不含传输层资源。
     pub recovered_session: Mutex<Option<ActiveSession>>,
+    /// 最近一次流程/启动失败（code, message）。诊断中心与依赖 Controller 的命令
+    /// 据此快速返回明确原因（如 CONTROLLER_UNREACHABLE），避免阻塞/笼统"连接失败"。
+    pub last_error: Mutex<Option<(String, String)>>,
 }
 
 impl AgentCore {
@@ -280,6 +283,10 @@ impl AgentCore {
         let mut s = self.status.lock().unwrap();
         s.state = state;
         s.user_facing = state.user_facing().into();
+        // 成功恢复到 Ready：清空上次失败记录（诊断不再显示过期错误）。
+        if state == AgentState::Ready {
+            *self.last_error.lock().unwrap() = None;
+        }
         tracing::info!(target: "agent", state = ?state, "状态切换");
     }
 
@@ -307,6 +314,10 @@ impl AgentCore {
         };
         // M1-2：当前连接实际路径（directlink | n2n；未连接 = ""）。
         snap.current_path = self.current_path.lock().unwrap().clone();
+        // 最近一次失败（诊断中心展示明确原因；Ready 后已清空）。
+        let (ec, em) = self.last_error.lock().unwrap().clone().unwrap_or_default();
+        snap.last_error_code = if ec.is_empty() { None } else { Some(ec) };
+        snap.last_error_message = if em.is_empty() { None } else { Some(em) };
         snap
     }
 
@@ -388,9 +399,44 @@ impl AgentCore {
     /// 流程失败：FAILED 状态 + Error 事件 + 会话资源回收。
     fn fail(&self, code: &str, err: impl std::fmt::Display) {
         tracing::error!(target: "agent", code, error = %err, "会话流程失败");
+        *self.last_error.lock().unwrap() = Some((code.to_string(), err.to_string()));
         self.abort_session_resources();
         self.set_state(AgentState::Failed);
         let _ = self.event_tx.send(Event::Error { code: code.into(), message: err.to_string() });
+    }
+
+    /// Controller 已就绪（Ready/Connected 等）？依赖 Controller 的命令据此快速失败，
+    /// 避免在 Controller 不可达时阻塞到 HTTP 超时才返回（虚拟机 EF0001 超时根因之一）。
+    fn controller_ready(&self) -> bool {
+        matches!(
+            self.snapshot().state,
+            AgentState::Ready
+                | AgentState::SessionCreating
+                | AgentState::WaitingForPeer
+                | AgentState::PeerDiscovered
+                | AgentState::Gathering
+                | AgentState::Punching
+                | AgentState::NoiseHandshake
+                | AgentState::ConfiguringOverlay
+                | AgentState::Connected
+                | AgentState::Reconnecting
+        )
+    }
+
+    /// 依赖 Controller 的命令在未就绪时的快速失败错误（带最近一次失败原因）。
+    /// ControllerConnecting 表示仍在启动握手，提示稍候；否则透出 last_error。
+    fn controller_unready_error(&self, id: u64) -> Response {
+        let state = self.snapshot().state;
+        let (code, msg) = if state == AgentState::ControllerConnecting {
+            ("CONTROLLER_CONNECTING".into(), "正在连接网络服务，请稍候".into())
+        } else {
+            self.last_error
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| ("CONTROLLER_UNREACHABLE".into(), "无法连接到网络服务".into()))
+        };
+        error_response(id, &code, msg)
     }
 
     fn fail_timeout(&self, code: &str, what: &str) {
@@ -642,6 +688,12 @@ impl AgentCore {
                 }
             }
             CommandKind::ListFriends => {
+                // Controller 未就绪（启动握手/不可达）时快速失败，避免阻塞到 HTTP 超时
+                // （虚拟机 EF0001「等待响应超时」根因之一：依赖 Controller 命令串行阻塞）。
+                if !self.controller_ready() {
+                    let _ = reply.send(self.controller_unready_error(id));
+                    return;
+                }
                 let client = self.controller();
                 match client.list_friendships(&self.credential()) {
                     Ok(friends) => {
@@ -667,6 +719,10 @@ impl AgentCore {
             }
             CommandKind::ListDevices => {
                 // M1-1：设备身份模型下"我的设备"= 本机设备（模型预留多设备用户）。
+                if !self.controller_ready() {
+                    let _ = reply.send(self.controller_unready_error(id));
+                    return;
+                }
                 let client = self.controller();
                 let self_dev = client.get_device(&self.credential(), &self.device_id);
                 let session_ip = self
@@ -696,6 +752,10 @@ impl AgentCore {
                 }
             }
             CommandKind::ListInvites => {
+                if !self.controller_ready() {
+                    let _ = reply.send(self.controller_unready_error(id));
+                    return;
+                }
                 let client = self.controller();
                 match client.list_invites(&self.credential()) {
                     Ok(invites) => {
@@ -1091,6 +1151,7 @@ impl MeshAgent {
             runtime: RuntimeState::new(cfg.runtime_dir.clone()),
             current_path: Mutex::new(String::new()),
             recovered_session: Mutex::new(None),
+            last_error: Mutex::new(None),
         });
 
         let runtime = Arc::new(
@@ -1297,6 +1358,8 @@ impl AgentHandle {
             "overlay": overlay_json,
             // M1-2：当前连接实际路径（directlink | n2n | ""）与 N2N 状态。
             "current_path": snap.current_path,
+            "last_error_code": snap.last_error_code,
+            "last_error_message": snap.last_error_message,
             "n2n": n2n_status_json(core),
         })
     }
@@ -1345,6 +1408,8 @@ async fn startup(core: Arc<AgentCore>) {
         match client.healthz() {
             Ok(_) => break,
             Err(e) => {
+                // 每次失败记录原因（agent.log 可见），便于定位是 DNS / 连接 / TLS 问题。
+                tracing::warn!(target: "agent", controller = %core.controller_url(), error = %e, "healthz 重试中");
                 if Instant::now() > deadline {
                     return core.fail("CONTROLLER_UNREACHABLE", format!("healthz 30s 未就绪: {e}"));
                 }
