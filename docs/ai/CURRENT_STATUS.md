@@ -32,6 +32,8 @@ v0.1.0
 
 [x] 双机联机修复（共享 Controller 拓扑；局域网 RFC1918 明文显式放行）
 
+[x] 双机部署用户体验优化（未连接 Controller 明确提示；设置页当前 Controller 地址；ADR-004）
+
 
 ## Current Development
 

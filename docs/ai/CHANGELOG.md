@@ -79,6 +79,28 @@ Added:
 - MeshLink UI 设置页 / agent 现在可保存并连接 RFC1918 私网 Controller（局域网双机联机）。
 
 
+## 双机部署用户体验优化（2026-09-01）
+
+Changed:
+
+- 首次启动未连接 Controller 时，首页状态不再显示模糊「连接失败」：
+  明确显示「未连接 Controller」（`renderStatus` 对 FAILED/STOPPED 且无 device_id
+  或 `S.ctlErr` 置位时覆盖文案；`CONTROLLER_UNREACHABLE` 事件路径同步）。
+- 设置页「当前生效地址」改名为「当前 Controller 地址」并实时刷新：进入设置页、
+  ControllerConnected 事件、启动初始化均调用 `loadControllerStatus`。
+- UI 侧 `isProdHttpRejected` 增加 RFC1918 私网放行（与 Rust controller-client /
+  Tauri validate_controller_url 三处对齐），修复「后端已放行但 UI 拒绝保存局域网
+  Controller」的不一致。
+
+Added:
+
+- `docs/adr/ADR-004-controller-topology.md`：记录 Controller 拓扑设计（为什么双机不能
+  各自跑独立 Controller、共享 Controller 架构、LAN Controller 使用场景、未来公网
+  Controller 规划：自签/私有 CA HTTPS、TLS 终结层 / Cloudflare Tunnel、多 Controller）。
+- JS 契约测试扩展：`ui_error_contract.test.js` 新增 isProdHttpRejected（https/
+  loopback/私网放行、公网拒绝）与 renderStatus「未连接 Controller」文案断言（40 项全 PASS）。
+
+
 ## Future
 
 M1-3:

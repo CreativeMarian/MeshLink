@@ -233,6 +233,12 @@ function renderStatus(snap) {
   else if (state === "FAILED" || state === "STOPPED") { cls = "dot-red"; }
   else if (state && state !== "STARTING") { cls = "dot-blue"; }
   label = (snap && snap.user_facing) || label;
+  // 未连接 Controller：明确提示（用户规格：不要显示模糊"连接失败"）。
+  // FAILED/STOPPED 且 agent 尚未注册成功（无 device_id）→ 不是会话失败，是 Controller 未连上。
+  if (state === "FAILED" || state === "STOPPED") {
+    const ctlDown = S.ctlErr || !(snap && snap.device_id);
+    if (ctlDown && label === "连接失败") label = "未连接 Controller";
+  }
   pill.className = "dot " + cls;
   text.textContent = label;
   if (snap && snap.device_id) {
@@ -312,6 +318,8 @@ function handleEvent(ev) {
       hideControllerUnreachable();
       renderStatus({ state: "READY", user_facing: "已就绪", device_id: d.device_id });
       refreshFriends();
+      // 设置页「当前 Controller 地址」实时刷新（即便不在设置页也保持最新值）。
+      loadControllerStatus();
       break;
 
     case "WaitingForPeer":
@@ -407,7 +415,7 @@ function handleErrorEvent(d) {
   if (code === "CONTROLLER_UNREACHABLE") {
     S.ctlErr = true;
     showControllerUnreachable(S.controllerUrl || "");
-    renderStatus({ state: "FAILED", user_facing: "无法连接到 Controller" });
+    renderStatus({ state: "FAILED", user_facing: "未连接 Controller" });
     if (S.view === "progress") setStep(-1);
     return;
   }
@@ -886,12 +894,25 @@ async function refreshDevices() {
 /* ---------------- 设置：Controller 地址（M1-1） ---------------- */
 
 function isProdHttpRejected(url) {
-  const u = new URL(url);
+  let u;
+  try { u = new URL(url); } catch { return true; } // 非法 URL 直接拒
   if (u.protocol === "http:") {
-    // DEV 白名单：仅 localhost / 127.0.0.1。
+    // DEV 白名单：仅 localhost / 127.0.0.1 / RFC1918 私网（与 controller-client 对齐）。
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return false;
+    if (isPrivateHost(u.hostname)) return false;
     return true; // 公网明文 HTTP 拒绝
   }
+  return false;
+}
+
+// RFC1918 私网判定（10/8、172.16/12、192.168/16；与 Rust controller-client 对齐）。
+function isPrivateHost(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return false;
+  const a = Number(m[1]);
+  if (a === 10) return true;
+  if (a === 172 && Number(m[2]) >= 16 && Number(m[2]) <= 31) return true;
+  if (a === 192 && Number(m[2]) === 168) return true;
   return false;
 }
 
@@ -1089,6 +1110,8 @@ async function boot() {
       $("controller-url").value = def;
     }
   } catch { /* 默认值由 spawn_agent_process 兜底 */ }
+  // 首次启动即加载「当前 Controller 地址 / 连接状态」（无需先点进设置页）。
+  loadControllerStatus();
   refreshFriends();
   refreshRecent();
 }

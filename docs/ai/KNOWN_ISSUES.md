@@ -62,6 +62,20 @@
   全部 PASS；属测试基建抖动，不影响产品逻辑。
 
 
+## 双机部署用户体验优化（2026-09-01）
+
+- 首页首次启动未连接 Controller 时，状态文案由模糊「连接失败」改为明确「未连接 Controller」
+  （`renderStatus` 对 FAILED/STOPPED 且无 device_id 或 `S.ctlErr` 置位时覆盖；`CONTROLLER_UNREACHABLE`
+  事件路径同步，横幅标题同步改为「未连接 Controller」）。
+- 设置页「当前 Controller 地址」实时显示（进入设置页 / ControllerConnected / 启动初始化均刷新）；
+  UI 侧 `isProdHttpRejected` 与 Rust controller-client / Tauri validate_controller_url 三处对齐，
+  放行 RFC1918 私网 http（公网 http 仍拒绝），消除「后端放行但 UI 拒绝保存局域网地址」不一致。
+- 新增 `docs/adr/ADR-004-controller-topology.md`：单 Controller 共享架构、LAN 明文场景、
+  未来公网规划（自签/私有 CA HTTPS、TLS 终结层 / Cloudflare Tunnel、多 Controller）。
+- 物理双机实机 UI 展示仍标 `PENDING_REAL_WORLD_VALIDATION`；JS 契约测试（ui_error_contract 40 项）
+  已覆盖文案与 URL 白名单，release_gui_smoke / release_two_machine_smoke 均 PASS。
+
+
 ## Development Notes
 
 

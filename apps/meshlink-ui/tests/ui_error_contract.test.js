@@ -75,6 +75,7 @@ const sandbox = {
   confirm: () => false,
   window: {
     isSecureContext: false,
+    __MESHLINK_TEST__: {},
     __TAURI__: {
       core: { invoke: (cmd, args) => __invokeImpl(cmd, args) },
       event: { listen: async () => () => {} },
@@ -175,6 +176,41 @@ async function withInvoke(rejectValue) {
   check("toast 显示类已加", !!t && t.classList.contains("show") && t.classList.contains("toast-error"));
   api.toast("正常提示", false);
   check("非错误 toast 不带 error 类", els["toast"].classList.contains("toast-error") === false);
+
+  /* ---------------- 5) isProdHttpRejected：RFC1918 私网 http 放行（与 Rust 对齐） ---------------- */
+  console.log("[5] isProdHttpRejected：loopback/私网放行、公网 http 拒绝");
+  check("https 放行", api.isProdHttpRejected("https://control.example.com/") === false);
+  check("http://localhost 放行", api.isProdHttpRejected("http://localhost:18080") === false);
+  check("http://127.0.0.1 放行", api.isProdHttpRejected("http://127.0.0.1:18080") === false);
+  check("http://10.0.0.5 私网放行", api.isProdHttpRejected("http://10.0.0.5:18080") === false);
+  check("http://172.16.0.8 私网放行", api.isProdHttpRejected("http://172.16.0.8:18080") === false);
+  check("http://192.168.1.10 私网放行", api.isProdHttpRejected("http://192.168.1.10:18080") === false);
+  check("公网 http 拒绝", api.isProdHttpRejected("http://control.example.com") === true);
+  check("公网 IP http 拒绝", api.isProdHttpRejected("http://8.8.8.8:18080") === true);
+  check("非法 URL 拒绝", api.isProdHttpRejected("garbage") === true);
+
+  /* ---------------- 6) renderStatus：未连接 Controller 明确提示 ---------------- */
+  console.log("[6] renderStatus：Controller 未连时不显示模糊『连接失败』");
+  const S = sandbox.window.__MESHLINK_TEST__.S;
+  // renderStatus 内部经 getElementById 读写 els["status-pill"/"status-text"]，测试从 els 读回。
+  const statusText = () => (els["status-text"] ||= makeEl("status-text")).textContent;
+  // S.ctlErr 置位（CONTROLLER_UNREACHABLE 事件路径）→ 首页状态 = 未连接 Controller。
+  S.ctlErr = true;
+  api.renderStatus({ state: "FAILED", user_facing: "连接失败" });
+  check("ctlErr → 显示『未连接 Controller』", statusText() === "未连接 Controller", statusText());
+  // 有设备 ID + 非 Controller 失败 → 保持『连接失败』（不误报 Controller）。
+  S.ctlErr = false;
+  api.renderStatus({ state: "FAILED", user_facing: "连接失败", device_id: "dev-x" });
+  check("有设备 ID 的失败保持『连接失败』", statusText() === "连接失败", statusText());
+  // 无设备 ID（首次启动未注册成功）→ 视为未连接 Controller。
+  S.ctlErr = false;
+  api.renderStatus({ state: "FAILED", user_facing: "连接失败" });
+  check("无设备 ID 失败 → 未连接 Controller", statusText() === "未连接 Controller", statusText());
+  // READY 正常。
+  S.ctlErr = false;
+  api.renderStatus({ state: "READY", user_facing: "已就绪", device_id: "dev-x" });
+  check("READY 正常显示『已就绪』", statusText() === "已就绪", statusText());
+  S.ctlErr = false;
 
   console.log("\nRESULT: " + pass + " passed, " + fail + " failed");
   if (fail > 0) process.exit(1);
