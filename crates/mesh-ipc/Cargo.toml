@@ -1,0 +1,14 @@
+[package]
+name = "mesh-ipc"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mesh-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# E2E：真实 Named Pipe server + client 回环（本 crate 测试内联）
+tracing-subscriber.workspace = true

@@ -1,0 +1,33 @@
+[package]
+name = "mesh-agent"
+version.workspace = true
+edition.workspace = true
+
+# MeshAgentService：后台编排服务（用户规格三）
+# 网络/身份/密钥/Socket 全部收归本进程；Tauri UI 仅经 mesh-ipc 管道通信。
+[[bin]]
+name = "mesh-agent"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mesh-common.workspace = true
+async-trait.workspace = true
+mesh-ipc.workspace = true
+transport-api.workspace = true
+# 未进 workspace.dependencies 的内部 crate（路径依赖防漂移）
+mesh-vnic = { path = "../mesh-vnic" }
+directlink = { path = "../directlink" }
+transport-n2n = { path = "../transport-n2n" }
+secure-store.workspace = true
+controller-client.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

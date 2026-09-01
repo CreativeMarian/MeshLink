@@ -1,0 +1,11 @@
+[package]
+name = "secure-store"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mesh-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+snow.workspace = true

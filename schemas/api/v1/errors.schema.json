@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meshlink.local/schemas/api/v1/errors.schema.json",
+  "title": "meshlink API 错误响应信封",
+  "description": "错误码与用户提示分离（文档 25.2）。code 为 u32 稳定错误码，与 crates/mesh-common ErrorCode 数值一致；user_message 面向用户，禁止包含底层细节。",
+  "type": "object",
+  "required": ["code", "user_message"],
+  "properties": {
+    "code": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "0x{category:02X}{index:04X}，如 0x00020001"
+    },
+    "user_message": {
+      "type": "string",
+      "description": "面向用户的提示文案"
+    },
+    "details": {
+      "type": "string",
+      "description": "仅写入日志与诊断页，不下发到普通 UI"
+    },
+    "retryable": {
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

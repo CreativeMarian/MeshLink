@@ -1,0 +1,38 @@
+[package]
+name = "directlink"
+version.workspace = true
+edition.workspace = true
+
+# M0-4 双机实测 PoC 工具（普通人可用：create/join/matrix）
+[[bin]]
+name = "directlink-poc"
+path = "src/bin/directlink_poc.rs"
+
+[dependencies]
+mesh-common.workspace = true
+transport-api.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait.workspace = true
+zeroize.workspace = true
+snow.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+
+# ---- Track A：rtc-ice 0.20.x（webrtc-rs 拆分后的独立 ICE crate；技术设计 §2.5 M0-4 冻结版本）----
+# 边界硬性规则（transport-api lib.rs / ADR DIRECTLINK_ICE.md）：
+# rtc-ice / rtc-shared / sansio 符号只允许出现在本 crate 内（src/ice/webrtc_track.rs），
+# 由 tests/gate_webrtc_boundary.rs 用 cargo tree 门禁强制。
+# 注意：rtc-ice 0.20 是 sans-io 实现——Agent 不持有 socket/时钟，调用方负责 I/O 驱动，
+# 封装逻辑见 webrtc_track.rs（自有 UDP socket + handle_timeout/handle_read/poll_write 驱动循环）。
+rtc-ice = "0.20.4"
+rtc-shared = "0.20.4"
+sansio = "1"
+bytes = "1"
+
+[dev-dependencies]
+# Controller MVP E2E：设备身份持久化 + Controller API 客户端。
+secure-store.workspace = true
+controller-client.workspace = true

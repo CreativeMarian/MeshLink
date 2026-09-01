@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0-m0"
+edition = "2021"
+license = "Proprietary"
+authors = ["meshlink"]
+
+[workspace.dependencies]
+# 内部 crate（统一路径依赖，避免版本漂移）
+mesh-common = { path = "crates/mesh-common" }
+transport-api = { path = "crates/transport-api" }
+config-manager = { path = "crates/config-manager" }
+circuit-breaker = { path = "crates/circuit-breaker" }
+secure-store = { path = "crates/secure-store" }
+controller-client = { path = "crates/controller-client" }
+mesh-ipc = { path = "crates/mesh-ipc" }
+mesh-agent = { path = "crates/mesh-agent" }
+
+# 外部依赖（集中版本管理）
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+async-trait = "0.1"
+zeroize = { version = "1", features = ["derive"] }
+secrecy = "0.10"
+# M0-5 DirectLink Security：Noise_IK 数据面（StatelessTransportState 显式 nonce）
+snow = "0.10"
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

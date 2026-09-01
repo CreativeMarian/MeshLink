@@ -1,0 +1,8 @@
+[package]
+name = "circuit-breaker"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mesh-common.workspace = true
+config-manager.workspace = true

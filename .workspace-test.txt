@@ -1,0 +1,721 @@
+   Compiling mesh-common v0.1.0-m0 (E:\Demo\NtNTier\crates\mesh-common)
+   Compiling controller-client v0.1.0-m0 (E:\Demo\NtNTier\crates\controller-client)
+   Compiling mesh-ipc v0.1.0-m0 (E:\Demo\NtNTier\crates\mesh-ipc)
+   Compiling transport-api v0.1.0-m0 (E:\Demo\NtNTier\crates\transport-api)
+   Compiling metrics v0.1.0-m0 (E:\Demo\NtNTier\crates\metrics)
+   Compiling config-manager v0.1.0-m0 (E:\Demo\NtNTier\crates\config-manager)
+warning: use of deprecated enum `packet::PacketRejectReason`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+  --> crates\mesh-vnic\src\lib.rs:23:5
+   |
+23 |     PacketRejectReason,
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated enum `packet::PacketRejectReason`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+ --> crates\mesh-vnic\src\error.rs:6:20
+  |
+6 | use crate::packet::PacketRejectReason;
+  |                    ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated enum `packet::PacketRejectReason`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+  --> crates\mesh-vnic\src\error.rs:64:29
+   |
+64 |     PacketInvalid { reason: PacketRejectReason },
+   |                             ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated enum `packet::PacketRejectReason`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+  --> crates\mesh-vnic\src\vnic.rs:33:78
+   |
+33 |     classify, icmp_checksum, validate_ipv4, PacketBuffer, PacketDisposition, PacketRejectReason,
+   |                                                                              ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated unit variant `packet::PacketRejectReason::TooLong`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\vnic.rs:538:79
+    |
+538 |             return Err(VnicError::PacketInvalid { reason: PacketRejectReason::TooLong });
+    |                                                                               ^^^^^^^
+
+warning: use of deprecated unit variant `packet::PacketRejectReason::UnsupportedIpVersion`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\vnic.rs:633:80
+    |
+633 |             None => Err(VnicError::PacketInvalid { reason: PacketRejectReason::UnsupportedIpVersion }),
+    |                                                                                ^^^^^^^^^^^^^^^^^^^^
+
+warning: field `name` is never read
+  --> crates\mesh-vnic\src\adapter.rs:71:5
+   |
+69 | pub(crate) struct AdapterLock {
+   |                   ----------- field in this struct
+70 |     handle: Handle,
+71 |     name: String,
+   |     ^^^^
+   |
+   = note: `AdapterLock` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `mutex_name` is never used
+   --> crates\mesh-vnic\src\adapter.rs:152:12
+    |
+ 78 | impl AdapterLock {
+    | ---------------- method in this implementation
+...
+152 |     pub fn mutex_name(&self) -> &str {
+    |            ^^^^^^^^^^
+
+warning: associated items `open` and `name` are never used
+   --> crates\mesh-vnic\src\adapter.rs:239:12
+    |
+193 | impl WintunAdapter {
+    | ------------------ associated items in this implementation
+...
+239 |     pub fn open(
+    |            ^^^^
+...
+270 |     pub fn name(&self) -> &str {
+    |            ^^^^
+
+warning: constant `ERROR_SUCCESS` is never used
+  --> crates\mesh-vnic\src\api.rs:29:18
+   |
+29 | pub(crate) const ERROR_SUCCESS: OsError = 0;
+   |                  ^^^^^^^^^^^^^
+
+warning: constant `ERROR_INVALID_PARAMETER` is never used
+  --> crates\mesh-vnic\src\api.rs:34:18
+   |
+34 | pub(crate) const ERROR_INVALID_PARAMETER: OsError = 87;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ERROR_NOT_FOUND` is never used
+  --> crates\mesh-vnic\src\api.rs:35:18
+   |
+35 | pub(crate) const ERROR_NOT_FOUND: OsError = 1168;
+   |                  ^^^^^^^^^^^^^^^
+
+warning: fields `open_adapter` and `delete_driver` are never read
+   --> crates\mesh-vnic\src\api.rs:295:9
+    |
+293 | pub(crate) struct WintunFunctions {
+    |                   --------------- fields in this struct
+294 |     pub create_adapter: unsafe extern "system" fn(*const u16, *const u16, *const Guid, *mut i32) -> WintunAdapterHandle,
+295 |     pub open_adapter: unsafe extern "system" fn(*const u16) -> WintunAdapterHandle,
+    |         ^^^^^^^^^^^^
+296 |     pub close_adapter: unsafe extern "system" fn(WintunAdapterHandle),
+297 |     pub delete_driver: unsafe extern "system" fn(*mut i32) -> i32,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `WintunFunctions` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: constant `MUTEX_MODIFY_STATE` is never used
+  --> crates\mesh-vnic\src\api.rs:91:22
+   |
+91 |     pub(crate) const MUTEX_MODIFY_STATE: u32 = 0x0001;
+   |                      ^^^^^^^^^^^^^^^^^^
+
+warning: constant `SYNCHRONIZE` is never used
+  --> crates\mesh-vnic\src\api.rs:92:22
+   |
+92 |     pub(crate) const SYNCHRONIZE: u32 = 0x0010_0000;
+   |                      ^^^^^^^^^^^
+
+warning: constant `READ_CONTROL` is never used
+  --> crates\mesh-vnic\src\api.rs:93:22
+   |
+93 |     pub(crate) const READ_CONTROL: u32 = 0x0002_0000;
+   |                      ^^^^^^^^^^^^
+
+warning: constant `MUTEX_OPEN_DESIRED` is never used
+  --> crates\mesh-vnic\src\api.rs:96:22
+   |
+96 |     pub(crate) const MUTEX_OPEN_DESIRED: u32 = MUTEX_MODIFY_STATE | SYNCHRONIZE | READ_CONTROL;
+   |                      ^^^^^^^^^^^^^^^^^^
+
+warning: function `OpenMutexW` is never used
+  --> crates\mesh-vnic\src\api.rs:70:23
+   |
+70 |         pub(crate) fn OpenMutexW(dw_desired_access: u32, b_inherit_handle: i32, lp_name: *const u16) -> Handle;
+   |                       ^^^^^^^^^^
+
+warning: function `ip_exists_on` is never used
+   --> crates\mesh-vnic\src\ip_config.rs:328:8
+    |
+328 | pub fn ip_exists_on(luid: NetLuid, ip: Ipv4Addr) -> Result<bool, VnicError> {
+    |        ^^^^^^^^^^^^
+
+warning: method `handle` is never used
+  --> crates\mesh-vnic\src\session.rs:38:19
+   |
+24 | impl WintunSession {
+   | ------------------ method in this implementation
+...
+38 |     pub(crate) fn handle(&self) -> WintunSessionHandle {
+   |                   ^^^^^^
+
+warning: method `is_empty` is never used
+   --> crates\mesh-vnic\src\session.rs:136:19
+    |
+126 | impl ReceivedPacketRef<'_> {
+    | -------------------------- method in this implementation
+...
+136 |     pub(crate) fn is_empty(&self) -> bool {
+    |                   ^^^^^^^^
+
+   Compiling circuit-breaker v0.1.0-m0 (E:\Demo\NtNTier\crates\circuit-breaker)
+   Compiling transport-cf-ws v0.1.0-m0 (E:\Demo\NtNTier\crates\transport-cf-ws)
+   Compiling transport-n2n v0.1.0-m0 (E:\Demo\NtNTier\crates\transport-n2n)
+   Compiling mesh-vnic v0.1.0-m0 (E:\Demo\NtNTier\crates\mesh-vnic)
+warning: `mesh-vnic` (lib) generated 21 warnings
+   Compiling overlay-router v0.1.0-m0 (E:\Demo\NtNTier\crates\overlay-router)
+warning: value assigned to `last_err` is never read
+   --> crates\mesh-vnic\src\bin\mesh-vnic-test-helper.rs:272:25
+    |
+272 |                         last_err = format!("{e}");
+    |                         ^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `mesh-vnic` (bin "mesh-vnic-test-helper") generated 1 warning
+warning: function `GetNamedSecurityInfoW` is never used
+  --> crates\secure-store\src\acl.rs:58:8
+   |
+58 |     fn GetNamedSecurityInfoW(
+   |        ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling secure-store v0.1.0-m0 (E:\Demo\NtNTier\crates\secure-store)
+warning: `secure-store` (lib) generated 1 warning
+   Compiling directlink v0.1.0-m0 (E:\Demo\NtNTier\crates\directlink)
+   Compiling mesh-agent v0.1.0-m0 (E:\Demo\NtNTier\crates\mesh-agent)
+warning: use of deprecated unit variant `packet::PacketRejectReason::TooShort`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\packet.rs:385:63
+    |
+385 |         assert_eq!(validate_ipv4(&p), Err(PacketRejectReason::TooShort));
+    |                                                               ^^^^^^^^
+
+warning: use of deprecated unit variant `packet::PacketRejectReason::TooShort`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\packet.rs:386:64
+    |
+386 |         assert_eq!(validate_ipv4(&[]), Err(PacketRejectReason::TooShort));
+    |                                                                ^^^^^^^^
+
+warning: use of deprecated unit variant `packet::PacketRejectReason::UnsupportedIpVersion`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\packet.rs:393:63
+    |
+393 |         assert_eq!(validate_ipv4(&p), Err(PacketRejectReason::UnsupportedIpVersion));
+    |                                                               ^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated unit variant `packet::PacketRejectReason::InvalidIhl`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\packet.rs:400:63
+    |
+400 |         assert_eq!(validate_ipv4(&p), Err(PacketRejectReason::InvalidIhl));
+    |                                                               ^^^^^^^^^^
+
+warning: use of deprecated unit variant `packet::PacketRejectReason::InvalidIhl`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\packet.rs:405:63
+    |
+405 |         assert_eq!(validate_ipv4(&p), Err(PacketRejectReason::InvalidIhl));
+    |                                                               ^^^^^^^^^^
+
+warning: use of deprecated unit variant `packet::PacketRejectReason::InvalidTotalLength`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\packet.rs:413:63
+    |
+413 |         assert_eq!(validate_ipv4(&p), Err(PacketRejectReason::InvalidTotalLength));
+    |                                                               ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated unit variant `packet::PacketRejectReason::TotalLengthExceedsBuffer`: 内部使用 PacketDisposition；仅 VnicError::PacketInvalid 继续使用旧枚举映射到稳定 ErrorCode
+   --> crates\mesh-vnic\src\packet.rs:418:63
+    |
+418 |         assert_eq!(validate_ipv4(&p), Err(PacketRejectReason::TotalLengthExceedsBuffer));
+    |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `mesh-vnic` (bin "mesh-vnic-test-helper" test) generated 1 warning (1 duplicate)
+warning: associated items `open` and `name` are never used
+   --> crates\mesh-vnic\src\adapter.rs:239:12
+    |
+193 | impl WintunAdapter {
+    | ------------------ associated items in this implementation
+...
+239 |     pub fn open(
+    |            ^^^^
+...
+270 |     pub fn name(&self) -> &str {
+    |            ^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates\directlink\tests\controller_e2e.rs:176:9
+    |
+176 |     let mut a = setup_device(&client, &run_dir, "device-a", "e2e-machine-A");
+    |         ----^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `current_state` is never used
+   --> crates\mesh-agent\src\agent.rs:157:8
+    |
+145 | impl AgentCore {
+    | -------------- method in this implementation
+...
+157 |     fn current_state(&self) -> AgentState {
+    |        ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `runtime` is never read
+   --> crates\mesh-agent\src\agent.rs:495:5
+    |
+494 | pub struct AgentHandle {
+    |            ----------- field in this struct
+495 |     runtime: Arc<tokio::runtime::Runtime>,
+    |     ^^^^^^^
+
+warning: `mesh-vnic` (lib test) generated 26 warnings (18 duplicates)
+warning: `mesh-agent` (lib test) generated 2 warnings (1 duplicate)
+warning: `directlink` (test "controller_e2e") generated 1 warning (run `cargo fix --test "controller_e2e" -p directlink` to apply 1 suggestion)
+warning: `mesh-agent` (lib) generated 2 warnings (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.49s
+     Running unittests src\lib.rs (target\debug\deps\circuit_breaker-6221969e310f4c16.exe)
+
+running 32 tests
+test breaker::tests::t02_single_failure_stays_closed ... ok
+test breaker::tests::t15_open_state_ignores_subsequent_failures ... ok
+test breaker::tests::t05_success_resets_consecutive_failures ... ok
+test breaker::tests::t06_fatal_from_closed_opens_immediately ... ok
+test breaker::tests::t10_half_open_first_success_still_half_open ... ok
+test breaker::tests::t11_half_open_second_success_still_half_open ... ok
+test breaker::tests::t13_half_open_probe_failure_reopens_with_fresh_cooldown ... ok
+test breaker::tests::t12_half_open_three_successes_close ... ok
+test breaker::tests::t04_three_consecutive_failures_open ... ok
+test breaker::tests::t17_force_close_resets_everything ... ok
+test breaker::tests::t22_clock_rollback_does_not_corrupt_state ... ok
+test breaker::tests::t24_probe_slot_lifecycle_and_custom_limit ... ok
+test breaker::tests::t25_event_fields_are_complete ... ok
+test clock::tests::fake_clock_advance_and_set ... ok
+test manager::tests::manager_statuses_sorted_by_key ... ok
+test manager::tests::t19_supernode_breakers_fully_isolated ... ok
+test breaker::tests::t23_cooldown_boundary_29999_vs_30000 ... ok
+test manager::tests::t20_provider_open_does_not_touch_supernode ... ok
+test params::tests::params_come_from_config_manager_only ... ok
+test scope::tests::keys_are_unique_per_scope_instance ... ok
+test breaker::tests::t08_cooldown_expiry_transitions_to_half_open ... ok
+test breaker::tests::t03_two_failures_stay_closed ... ok
+test breaker::tests::t01_initial_state_is_closed ... ok
+test breaker::tests::t07_open_rejects_probe_and_request_before_cooldown ... ok
+test breaker::tests::t09_half_open_allows_only_configured_probe_count ... ok
+test breaker::tests::t14_half_open_fatal_reopens_immediately ... ok
+test breaker::tests::t16_force_open ... ok
+test breaker::tests::t18_reset_from_half_open ... ok
+test manager::tests::manager_same_scope_returns_same_instance ... ok
+test manager::tests::t21_peer_a_open_does_not_affect_peer_b ... ok
+test breaker::tests::t26_no_duplicate_events_without_transition ... ok
+test clock::tests::monotonic_clock_starts_near_zero ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src\lib.rs (target\debug\deps\config_manager-2dedcfddcae63b56.exe)
+
+running 3 tests
+test tests::defaults_match_spec_appendix_b ... ok
+test tests::validate_rejects_empty_device_id ... ok
+test tests::validate_rejects_bad_vnic_params ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\controller_client-844c385eae36487e.exe)
+
+running 11 tests
+test tests::dev_mode_allows_only_loopback_http ... ok
+test tests::error_body_maps_to_api_error ... ok
+test tests::decode_key32_roundtrip ... ok
+test tests::malformed_status_line_rejected ... ok
+test tests::parses_chunked_response ... ok
+test tests::parses_content_length_response ... ok
+test tests::parses_http_base_url ... ok
+test tests::overlay_fields_deserialize ... ok
+test tests::https_roundtrip_with_pinned_ca ... ok
+test tests::production_accepts_https_rejects_downgrade_schemes ... ok
+test tests::https_failure_is_transport_error_never_plaintext_fallback ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+     Running unittests src\lib.rs (target\debug\deps\directlink-f884026288cfb903.exe)
+
+running 52 tests
+test crypto::frame::tests::rejects_malformed ... ok
+test crypto::frame::tests::roundtrip_data_frame ... ok
+test crypto::keys::tests::decode_key32_rejects_malformed ... ok
+test crypto::frame::tests::roundtrip_handshake_with_intro ... ok
+test crypto::frame::tests::rejects_bad_intro ... ok
+test crypto::replay::tests::big_jump_clears_bitmap ... ok
+test crypto::replay::tests::duplicate_rejected ... ok
+test crypto::replay::tests::forged_frame_does_not_pollute_window ... ok
+test crypto::replay::tests::too_old_rejected ... ok
+test crypto::replay::tests::window_edge_semantics ... ok
+test crypto::replay::tests::out_of_order_within_window_accepted ... ok
+test crypto::frame::tests::magic_disjoint_from_stun_and_mtu ... ok
+test crypto::keys::tests::fingerprint_is_case_insensitive ... ok
+test crypto::keys::tests::rejects_invalid_device_id ... ok
+test crypto::replay::tests::first_frame_accepted ... ok
+test crypto::tests::prologue_layout_matches_spec ... ok
+test crypto::keys::tests::generate_and_fingerprint_roundtrip ... ok
+test ice::agent::tests::nat_mapping_probe_via_injected_io ... ok
+test ice::candidate::tests::host_priority_gt_srflx ... ok
+test ice::candidate::tests::srflx_gather_via_injected_io ... ok
+test ice::ifinfo::tests::classify_physical_and_virtual ... ok
+test ice::ifinfo::tests::meshlink_descr_is_tun_class ... ok
+test ice::ifinfo::tests::physical_rank_ordering ... ok
+test ice::mtu::tests::all_failed_is_error ... ok
+test ice::mtu::tests::ladder_confirms_partial ... ok
+test ice::stun::tests::decode_rfc5389_official_vector ... ok
+test ice::stun::tests::error_response_surfaces_code ... ok
+test ice::candidate::tests::primary_local_ipv4_returns_something ... ok
+test ice::stun::tests::fingerprint_roundtrip ... ok
+test ice::stun::tests::rejects_bad_magic_and_truncation ... ok
+test ice::stun::tests::roundtrip_all_attrs ... ok
+test crypto::keys::tests::private_key_zeroed_on_drop ... ok
+test ice::agent::tests::two_sides_punch_over_injected_bus ... ok
+test ice::ifinfo::tests::list_interfaces_smoke_real_ffi ... ok
+test ice::stun::tests::binding_exchange_over_injected_io ... ok
+test crypto::tests::prologue_mismatch_rejected ... ok
+test crypto::tests::handshake_success_and_key_agreement ... ok
+test crypto::tests::tampered_frame_header_fails_handshake ... ok
+test crypto::tests::replayed_frame_rejected ... ok
+test crypto::tests::out_of_order_frames_accepted ... ok
+test crypto::tests::encrypted_roundtrip ... ok
+test crypto::tests::forged_frame_does_not_block_legitimate ... ok
+test crypto::tests::responder_verifies_initiator_key_from_registry ... ok
+test crypto::tests::unknown_epoch_rejected ... ok
+test crypto::tests::responder_resends_cached_msg2_on_duplicate_msg1 ... ok
+test crypto::tests::responder_rejects_initiator_key_mismatch ... ok
+test crypto::tests::wrong_expected_static_rejected ... ok
+test crypto::tests::wrong_key_frame_rejected ... ok
+test crypto::tests::rekey_time_trigger ... ok
+test ice::agent::tests::punch_rejects_wrong_mapped ... ok
+test ice::agent::tests::keepalive_tracks_rtt_and_misses ... ok
+test crypto::tests::rekey_switch_with_grace ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running unittests src\bin\directlink_poc.rs (target\debug\deps\directlink_poc-b0f9b79d7ededb1f.exe)
+
+running 7 tests
+test tests::track_b_without_k_rejected ... ok
+test tests::track_b_bad_k_rejected ... ok
+test tests::track_a_without_k_is_valid ... ok
+test tests::tampered_k_still_parses_but_differs ... ok
+test tests::v4_roundtrip_preserves_k ... ok
+test tests::v3_code_rejected_by_version ... ok
+test tests::offer_k_matches_creator_identity ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\controller_e2e.rs (target\debug\deps\controller_e2e-d20a3f69f36ad772.exe)
+
+running 2 tests
+test controller_e2e_six_digit_code_encrypted_directlink ... ok
+test controller_unreachable_is_structured_error ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+     Running tests\crypto_transport_loopback.rs (target\debug\deps\crypto_transport_loopback-0a6524754f848c8a.exe)
+
+running 3 tests
+test noise_handshake_and_encrypted_roundtrip ... ok
+test wrong_key_handshake_times_out ... ok
+test rekey_keeps_data_flowing ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.07s
+
+     Running tests\dual_track_loopback.rs (target\debug\deps\dual_track_loopback-9a77fb3019a407c4.exe)
+
+running 3 tests
+test recv_from_zero_timeout_is_none ... ok
+test track_b_punch_reuses_gather_port ... ok
+test dual_track_loopback_comparison ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\gate_webrtc_boundary.rs (target\debug\deps\gate_webrtc_boundary-80e667631807248f.exe)
+
+running 1 test
+test webrtc_crates_only_directly_depended_by_directlink ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests\noise_msg1_state_machine.rs (target\debug\deps\noise_msg1_state_machine-fb657ab50527f5a6.exe)
+
+running 5 tests
+test epoch_bound_handshake_success ... ok
+test duplicate_msg1_idempotent ... ok
+test old_epoch_replay_rejected ... ok
+test wrong_session_id_rejected ... ok
+test future_epoch_skipped_rejected ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+
+     Running tests\poc_e2e.rs (target\debug\deps\poc_e2e-ef76fd0c59139c7e.exe)
+
+running 2 tests
+test e2e_tampered_key_handshake_fails ... ok
+test e2e_create_join_noise_encrypted ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.34s
+
+     Running unittests src\lib.rs (target\debug\deps\mesh_agent-a45496110e583fd0.exe)
+
+running 10 tests
+test agent::tests::code_validation_strict ... ok
+test agent::tests::cidr_parsing_and_default_subnet ... ok
+test overlay::tests::mock_lifecycle_route_policy_and_echo_auto_reply ... ok
+test state::tests::snapshot_roundtrip ... ok
+test icmp::tests::non_matching_packets_rejected ... ok
+test agent::tests::invite_ttl_mapping ... ok
+test icmp::tests::smoke_request_reply_roundtrip ... ok
+test state::tests::all_fourteen_states_covered_by_user_facing_copy ... ok
+test overlay::tests::mock_clone_shares_stack ... ok
+test state::tests::state_wire_is_screaming_snake ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\mesh_agent-75321db3df521557.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\mesh_common-45132f0ede5cf357.exe)
+
+running 7 tests
+test logging::tests::redact_long_values_keep_head_tail ... ok
+test error::tests::error_codes_are_unique ... ok
+test logging::tests::sensitive_field_detection ... ok
+test events::tests::password_auth_failure_never_contains_raw_source ... ok
+test events::tests::path_switched_json_has_required_fields ... ok
+test logging::tests::redact_short_values ... ok
+test error::tests::user_message_never_equals_debug ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\mesh_ipc-55e20db7b24f4b7d.exe)
+
+running 14 tests
+test client::tests::invalid_pipe_name_rejected ... ok
+test client::tests::trim_handles_crlf ... ok
+test client::tests::connect_missing_pipe_fails ... ok
+test proto::tests::all_ten_events_roundtrip ... ok
+test proto::tests::line_framing ... ok
+test proto::tests::all_nine_commands_roundtrip ... ok
+test client::tests::parse_event_and_response ... ok
+test proto::tests::command_wire_roundtrip ... ok
+test proto::tests::overlong_line_rejected ... ok
+test proto::tests::response_error_wire ... ok
+test server::tests::stop_terminates_serving ... ok
+test server::tests::malformed_request_gets_protocol_error ... ok
+test server::tests::pipe_dacl_has_exactly_two_aces ... ok
+test server::tests::server_client_roundtrip_and_event_broadcast ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running unittests src\lib.rs (target\debug\deps\mesh_vnic-14c39f42a5f475a4.exe)
+
+running 33 tests
+test adapter::tests::adapter_key_is_stable_fnv1a_16hex ... ok
+test api::tests::guid_parse_roundtrip ... ok
+test api::tests::non_wintun_dll_reports_symbol_missing ... ok
+test api::tests::ring_capacity_validation_rejects_illegal_values ... ok
+test error::tests::error_classes_map_to_distinct_codes ... ok
+test adapter::tests::mutex_release_then_reacquire_is_not_abandoned ... ok
+test ip_config::tests::table_containers_first_field_offset_matches_os_abi ... ok
+test packet::tests::icmp_echo_reply_transforms_request ... ok
+test ip_config::tests::subnet_overlap_math ... ok
+test packet::tests::invalid_ihl_rejected ... ok
+test packet::tests::ipv4_options_do_not_break_validation ... ok
+test packet::tests::ipv6_identified_and_rejected_not_panic ... ok
+test packet::tests::too_short_rejected ... ok
+test packet::tests::valid_ipv4_passes ... ok
+test vnic::tests::from_params_accepts_defaults ... ok
+test vnic::tests::from_params_guid_mode_b ... ok
+test vnic::tests::from_params_rejects_bad_cidr_and_ip ... ok
+test api::tests::missing_dll_reports_dll_not_found ... ok
+test vnic::tests::from_params_rejects_illegal_ring_capacity ... ok
+test vnic::tests::from_params_rejects_virtual_ip_outside_overlay ... ok
+test ip_config::tests::unicast_ipaddress_row_layout_matches_msvc_80_bytes ... ok
+test ip_config::tests::ipforward_row_write_fields_layout_matches_abi ... ok
+test ip_config::tests::sockaddr_inet_layout_matches_abi ... ok
+test ip_config::tests::ipforward_row_layout_is_104_bytes ... ok
+test packet::tests::packet_disposition_classify_four_quadrants ... ok
+test packet::tests::invalid_total_length_rejected ... ok
+test packet::tests::rx_drop_key_covers_all_four_categories_without_accept ... ok
+test vnic::tests::from_params_rejects_default_route_cidr ... ok
+test adapter::tests::mutex_contention_same_process_returns_locked ... ok
+test adapter::tests::mutex_abandoned_by_thread_exit_is_recovered ... ok
+test vnic::tests::peer_route_policy_only_allows_overlay_addresses ... ok
+test ip_config::tests::host_route_row_carries_exact_peer_prefix_32 ... ok
+test api::tests::fake_dll_in_cwd_is_never_loaded ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\mesh-vnic-test-helper.rs (target\debug\deps\mesh_vnic_test_helper-0d4c9b053f02a4c5.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\real_machine.rs (target\debug\deps\real_machine-b5d839a92bad683c.exe)
+
+running 15 tests
+test adapter_create_ip_session_routes_and_no_residual ... ignored
+test crash_recovery_after_process_kill ... ignored
+test cross_process_abandoned_event_chain_via_out_file ... ignored
+test cross_process_mutex_contention_true_processes ... ignored
+test cross_process_taskkill_abandoned_recovery_with_rx_tx_smoke ... ignored
+test guid_identity_mode_a_vs_b ... ignored
+test icmp_bidirectional_through_windows_stack ... ignored
+test lifecycle_stress_100_cycles ... ignored
+test non_admin_mutex_cannot_acquire ... ignored
+test overlay_subnet_conflict_detected ... ignored
+test peer_host_route_add_idempotent_and_no_residual ... ignored
+test provider_crash_does_not_affect_vnic ... ignored
+test service_style_start_stop_100 ... ignored
+test tx_backpressure_ring_full_no_panic ... ignored
+test vnic_latency_stall_30min ... ignored
+
+test result: ok. 0 passed; 0 failed; 15 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\metrics-12764981c5eb5476.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\overlay_router-89c5333de178efaa.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\secure_store-55746be8efb58735.exe)
+
+running 11 tests
+test acl::tests::current_user_sid_starts_with_s_1_5 ... ok
+test tests::b64_roundtrip ... ok
+test dpapi::tests::dpapi_rejects_garbage ... ok
+test acl::tests::system_sid_is_s_1_5_18 ... ok
+test dpapi::tests::dpapi_roundtrip ... ok
+test acl::tests::restrict_acl_on_temp_file ... ok
+test tests::private_key_never_plaintext_on_disk ... ok
+test tests::tampered_file_rejected_not_regenerated ... ok
+test tests::update_credential_keeps_identity ... ok
+test tests::save_load_roundtrip_and_stable_identity ... ok
+test tests::create_or_load_generates_once_and_is_stable ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src\lib.rs (target\debug\deps\transport_api-0b706cbb3b04cf04.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\transport_cf_ws-fac6bc8ef53ba923.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\transport_n2n-7ca308b84b6d5e31.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests circuit_breaker
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests config_manager
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests controller_client
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests directlink
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mesh_agent
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mesh_common
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mesh_ipc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mesh_vnic
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests metrics
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests overlay_router
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests secure_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests transport_api
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests transport_cf_ws
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests transport_n2n
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

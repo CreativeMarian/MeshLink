@@ -1,0 +1,16 @@
+{
+  "id": "host-a",
+  "nat": "None",
+  "endpoints": [
+    {
+      "ip": "192.168.10.147",
+      "port": 42001,
+      "kind": "host"
+    },
+    {
+      "ip": "127.0.0.1",
+      "port": 42001,
+      "kind": "host"
+    }
+  ]
+}

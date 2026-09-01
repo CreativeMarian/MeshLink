@@ -1,0 +1,8 @@
+[package]
+name = "transport-cf-ws"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mesh-common.workspace = true
+transport-api.workspace = true

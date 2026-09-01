@@ -1,0 +1,19 @@
+[package]
+name = "controller-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mesh-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# PRODUCTION 传输：https:// 直连（TLS 由 rustls + 系统根/固定 CA；Cloudflare
+# Tunnel 场景客户端仍标准 https，不感知 Tunnel 存在）
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = "1"
+rustls-pemfile = "2"
+
+[dev-dependencies]
+# 自签证书生成（仅测试：本地 TLS server 验证 https 路径）
+rcgen = "0.13"

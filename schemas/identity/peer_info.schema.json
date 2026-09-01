@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meshlink.local/schemas/identity/peer_info.schema.json",
+  "title": "PeerInfo（Controller 下发的对端信息）",
+  "description": "Controller Peer Discovery / Candidate 交换结果。overlay_mac 为 Controller 分配的稳定 MAC（见 overlay_mac.md），static_key_fingerprint 用于 Noise IK 握手后的身份绑定校验。",
+  "type": "object",
+  "required": ["device_id", "overlay_mac", "virtual_ip"],
+  "properties": {
+    "device_id": { "type": "string", "pattern": "^dev_[A-Za-z0-9]+$" },
+    "device_name": { "type": "string" },
+    "network_id": { "type": "string", "pattern": "^net_[A-Za-z0-9]+$" },
+    "overlay_mac": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$",
+      "description": "Controller 分配，设备生命周期稳定，与虚拟 IP 无关"
+    },
+    "virtual_ip": { "type": "string", "format": "ipv4" },
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ip", "port", "kind"],
+        "properties": {
+          "ip": { "type": "string" },
+          "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "kind": { "type": "string", "enum": ["host", "server_reflexive", "relay"] }
+        }
+      }
+    },
+    "static_key_fingerprint": {
+      "type": "string",
+      "pattern": "^SHA256:[0-9a-f]{64}$",
+      "description": "对端设备静态 X25519 公钥指纹"
+    },
+    "online": { "type": "boolean" },
+    "last_seen": { "type": "string", "format": "date-time" }
+  }
+}

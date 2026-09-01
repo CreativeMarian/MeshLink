@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meshlink.local/schemas/config/device.schema.json",
+  "title": "本地设备配置 (device.json)",
+  "description": "文档附录 A.1：本地设备配置，不可分享。禁止包含任何密钥明文，密钥只允许以 secure_key_ref 引用（如 windows-dpapi:...）。",
+  "type": "object",
+  "required": ["device_id", "device_name", "controller"],
+  "properties": {
+    "device_id": { "type": "string", "pattern": "^dev_[A-Za-z0-9]+$" },
+    "device_name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "controller": { "type": "string", "format": "uri" },
+    "networks": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^net_[A-Za-z0-9]+$" }
+    },
+    "secure_key_ref": {
+      "type": "string",
+      "description": "secure-store 引用，如 windows-dpapi:...；绝不保存密钥明文"
+    },
+    "last_good_paths": { "type": "object" },
+    "runtime": { "$ref": "#/$defs/runtime_params" }
+  },
+  "$defs": {
+    "runtime_params": {
+      "type": "object",
+      "description": "默认值与 crates/config-manager RuntimeParams 保持一致（文档附录 B）",
+      "properties": {
+        "device_heartbeat_secs": { "type": "integer", "default": 10 },
+        "peer_keepalive_secs": { "type": "integer", "default": 15 },
+        "sn_health_interval_secs": { "type": "integer", "default": 5 },
+        "sn_offline_threshold": { "type": "integer", "default": 3 },
+        "circuit_open_cooldown_secs": { "type": "integer", "default": 30 },
+        "half_open_success_threshold": { "type": "integer", "default": 3 },
+        "max_half_open_probes": { "type": "integer", "default": 1 },
+        "circuit_failure_threshold": { "type": "integer", "default": 3 },
+        "path_switch_min_interval_secs": { "type": "integer", "default": 15 },
+        "p2p_preemption_stable_secs": { "type": "integer", "default": 10 },
+        "health_critical_threshold": { "type": "integer", "default": 40 },
+        "health_critical_duration_secs": { "type": "integer", "default": 3 },
+        "path_preemption_quality_delta_pct": { "type": "integer", "default": 20 },
+        "invite_default_expiry_hours": { "type": "integer", "default": 24 },
+        "password_max_attempts": { "type": "integer", "default": 5 },
+        "metrics_raw_retention_days": { "type": "integer", "default": 7 }
+      }
+    }
+  }
+}

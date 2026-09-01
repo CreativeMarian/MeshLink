@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeshLink</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- 顶栏：主导航（规格十三：首页 / 好友 / 设备 / 设置） -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">MeshLink</span>
+      </div>
+      <nav class="topnav">
+        <button class="nav-btn active" data-view="home">首页</button>
+        <button class="nav-btn" data-view="friends">好友</button>
+        <button class="nav-btn" data-view="devices">设备</button>
+        <button class="nav-btn" data-view="settings">设置</button>
+      </nav>
+      <button id="btn-diag" class="btn-ghost" title="高级诊断">诊断</button>
+    </header>
+
+    <!-- Controller 不可达横幅（规格：UI 不要只卡着等待；提供重连与改地址） -->
+    <div id="ctl-err" class="ctl-err hidden">
+      <div class="ctl-err-title">无法连接到 Controller</div>
+      <div class="ctl-err-addr">当前地址：<span class="mono" id="ctl-err-url">--</span></div>
+      <div class="ctl-err-actions">
+        <button id="btn-ctl-retry" class="btn btn-primary btn-sm">重新连接</button>
+        <button id="btn-ctl-change" class="btn btn-secondary btn-sm">修改 Controller 地址</button>
+      </div>
+    </div>
+
+    <!-- ============ 首页 ============ -->
+    <section id="view-home" class="view active">
+      <div class="status-line">
+        <span id="status-pill" class="dot dot-gray"></span>
+        <span id="status-text" class="status-text">正在连接服务...</span>
+      </div>
+      <div class="home-device-card" id="home-device-card" style="display:none">
+        <span class="info-label">我的设备</span>
+        <span class="mono" id="home-device"></span>
+        <span class="info-label" style="margin-left:16px">虚拟 IP</span>
+        <span class="mono" id="home-overlay-ip">--</span>
+      </div>
+      <div class="home-actions">
+        <button id="btn-create" class="btn btn-primary">创建6位连接</button>
+        <button id="btn-join" class="btn btn-secondary">加入连接</button>
+        <button id="btn-invite" class="btn btn-secondary">邀请好友</button>
+      </div>
+      <div id="home-error" class="error-banner hidden"></div>
+      <div class="friend-mini">
+        <p class="section-title-sm">好友</p>
+        <div id="home-friends" class="friend-mini-list"><span class="muted">暂无好友，点「邀请好友」添加。</span></div>
+      </div>
+      <!-- M1-1.5：最近连接（6 位码临时连接历史，与好友关系分离） -->
+      <div class="recent-mini">
+        <p class="section-title-sm">最近连接</p>
+        <div id="home-recent" class="recent-list"><span class="muted">暂无最近连接</span></div>
+      </div>
+      <p class="home-hint">创建 6 位连接码用于陌生设备临时连接；与好友直连请到「好友」页一键连接。</p>
+    </section>
+
+    <!-- ============ 创建（等待好友加入）============ -->
+    <section id="view-create" class="view">
+      <p class="section-title">连接码</p>
+      <div class="code-display" id="create-code">------</div>
+      <p class="countdown">有效时间：<span id="create-countdown">--:--</span></p>
+      <p class="waiting-hint">等待好友加入...</p>
+      <div class="action-row">
+        <button id="btn-copy-code" class="btn btn-secondary">复制连接码</button>
+        <button id="btn-cancel-create" class="btn btn-danger">取消</button>
+      </div>
+    </section>
+
+    <!-- ============ 加入（输入 6 位码）============ -->
+    <section id="view-join" class="view">
+      <p class="section-title">输入6位连接码</p>
+      <input id="join-code" class="code-input" inputmode="numeric" maxlength="6"
+             placeholder="------" autocomplete="off" />
+      <div id="join-error" class="error-banner hidden"></div>
+      <div class="action-row">
+        <button id="btn-join-back" class="btn btn-secondary">返回</button>
+        <button id="btn-join-connect" class="btn btn-primary">连接</button>
+      </div>
+    </section>
+
+    <!-- ============ 连接进度（用户化状态）============ -->
+    <section id="view-progress" class="view">
+      <p class="section-title" id="progress-title">正在连接</p>
+      <ul class="steps">
+        <li class="step" data-step="0"><span class="step-icon"></span><span class="step-label">正在寻找设备...</span></li>
+        <li class="step" data-step="1"><span class="step-icon"></span><span class="step-label">正在建立直连...</span></li>
+        <li class="step" data-step="2"><span class="step-icon"></span><span class="step-label">正在建立安全连接...</span></li>
+        <li class="step" data-step="3"><span class="step-icon"></span><span class="step-label">正在配置虚拟网络...</span></li>
+      </ul>
+      <div id="progress-error" class="error-banner hidden">
+        <p id="progress-error-text" class="error-text"></p>
+        <p id="progress-error-code" class="error-code"></p>
+      </div>
+      <div class="action-row">
+        <button id="btn-cancel-progress" class="btn btn-danger">取消</button>
+      </div>
+    </section>
+
+    <!-- ============ 已连接 ============ -->
+    <section id="view-connected" class="view">
+      <div class="connected-badge">
+        <span class="connected-dot"></span>
+        <span>已连接</span>
+      </div>
+      <div class="info-card">
+        <div class="info-row"><span class="info-label">对方虚拟 IP</span><span class="info-value" id="conn-peer-ip">--</span></div>
+        <div class="info-row"><span class="info-label">本机虚拟 IP</span><span class="info-value" id="conn-local-ip">--</span></div>
+        <div class="info-row"><span class="info-label">对方设备</span><span class="info-value mono" id="conn-peer-device">--</span></div>
+      </div>
+      <div class="action-row">
+        <button id="btn-disconnect" class="btn btn-danger">断开连接</button>
+        <button id="btn-connected-home" class="btn btn-secondary">返回首页</button>
+      </div>
+    </section>
+
+    <!-- ============ 好友 ============ -->
+    <section id="view-friends" class="view">
+      <div class="view-head">
+        <p class="section-title">好友</p>
+        <button id="btn-invite-2" class="btn btn-secondary">邀请好友</button>
+      </div>
+      <div id="friends-list" class="list"><span class="muted">加载中...</span></div>
+    </section>
+
+    <!-- ============ 设备 ============ -->
+    <section id="view-devices" class="view">
+      <p class="section-title">我的设备</p>
+      <div id="devices-list" class="list"><span class="muted">加载中...</span></div>
+    </section>
+
+    <!-- ============ 设置 ============ -->
+    <section id="view-settings" class="view">
+      <p class="section-title">网络服务</p>
+      <div class="form-row">
+        <span class="info-label">Controller 地址</span>
+        <input id="controller-url" class="text-input" placeholder="https://control.example.com/" autocomplete="off" />
+      </div>
+      <p id="settings-error" class="error-text muted"></p>
+      <div class="action-row">
+        <button id="btn-test-controller" class="btn btn-secondary">测试连接</button>
+        <button id="btn-save-controller" class="btn btn-primary">保存并重连</button>
+      </div>
+      <div class="info-card" id="controller-status-card">
+        <div class="info-row"><span class="info-label">Controller</span><span class="info-value" id="ctl-state">--</span></div>
+        <div class="info-row"><span class="info-label">当前生效地址</span><span class="info-value mono" id="ctl-effective-url">--</span></div>
+        <div class="info-row"><span class="info-label">延迟</span><span class="info-value" id="ctl-latency">--</span></div>
+        <div class="info-row"><span class="info-label">服务器</span><span class="info-value mono" id="ctl-server">--</span></div>
+        <div class="info-row"><span class="info-label">我的设备</span><span class="info-value mono" id="ctl-device">--</span></div>
+      </div>
+    </section>
+
+    <!-- ============ 高级诊断 ============ -->
+    <section id="view-diag" class="view">
+      <p class="section-title">高级诊断</p>
+      <div id="diag-body" class="diag-body">加载中...</div>
+      <div class="action-row">
+        <button id="btn-diag-back" class="btn btn-secondary">返回</button>
+      </div>
+    </section>
+
+    <!-- ============ 好友详情（模态）============ -->
+    <div id="modal-friend" class="modal hidden">
+      <div class="modal-card">
+        <p class="section-title" id="fd-title">好友</p>
+        <div class="info-card" id="fd-body"></div>
+        <div class="action-row">
+          <button id="fd-connect" class="btn btn-primary">连接</button>
+          <button id="fd-delete" class="btn btn-danger">删除好友</button>
+          <button id="fd-close" class="btn btn-secondary">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 邀请对话框（模态）============ -->
+    <div id="modal-invite" class="modal hidden">
+      <div class="modal-card">
+        <p class="section-title">邀请好友</p>
+        <div id="invite-form">
+          <p class="form-label">有效期</p>
+          <div class="radio-row" id="invite-ttl">
+            <label><input type="radio" name="ttl" value="permanent" checked /> 永久</label>
+            <label><input type="radio" name="ttl" value="24h" /> 24小时</label>
+            <label><input type="radio" name="ttl" value="7d" /> 7天</label>
+            <label><input type="radio" name="ttl" value="custom" /> 自定义(小时)</label>
+            <input id="invite-custom-h" class="tiny-input" type="number" min="1" max="720" placeholder="h" />
+          </div>
+          <p class="form-label">使用次数</p>
+          <div class="radio-row" id="invite-uses">
+            <label><input type="radio" name="uses" value="1" checked /> 1次</label>
+            <label><input type="radio" name="uses" value="5" /> 5次</label>
+            <label><input type="radio" name="uses" value="0" /> 不限</label>
+          </div>
+          <div class="action-row">
+            <button id="invite-gen" class="btn btn-primary">生成邀请</button>
+            <button id="invite-cancel" class="btn btn-secondary">取消</button>
+          </div>
+        </div>
+        <div id="invite-result" class="hidden">
+          <p class="section-title-sm">好友邀请已生成</p>
+          <div class="invite-box mono" id="invite-uri">--</div>
+          <div class="invite-box mono" id="invite-token">--</div>
+          <div class="action-row">
+            <button id="invite-copy-uri" class="btn btn-secondary">复制邀请链接</button>
+            <button id="invite-copy-token" class="btn btn-secondary">复制邀请码</button>
+            <button id="invite-done" class="btn btn-primary">完成</button>
+          </div>
+        </div>
+        <p class="section-title-sm" style="margin-top:12px">我的邀请</p>
+        <div id="invite-list" class="list"><span class="muted">暂无邀请</span></div>
+      </div>
+    </div>
+
+    <!-- ============ 兑换邀请（模态）============ -->
+    <div id="modal-redeem" class="modal hidden">
+      <div class="modal-card">
+        <p class="section-title">加入好友邀请</p>
+        <p class="form-label">粘贴邀请（支持 meshlink://invite/ 链接或邀请码）</p>
+        <input id="redeem-input" class="text-input" placeholder="meshlink://invite/ 或粘贴邀请码" autocomplete="off" />
+        <div id="redeem-error" class="error-text muted"></div>
+        <div class="action-row">
+          <button id="redeem-go" class="btn btn-primary">兑换</button>
+          <button id="redeem-cancel" class="btn btn-secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 收到连接请求（模态，规格七）============ -->
+    <div id="modal-request" class="modal hidden">
+      <div class="modal-card">
+        <p class="section-title">收到好友直连请求</p>
+        <p class="request-text">来自：<span class="mono" id="req-from"></span></p>
+        <div class="action-row">
+          <button id="req-accept" class="btn btn-primary">接受</button>
+          <button id="req-reject" class="btn btn-danger">拒绝</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meshlink.local/schemas/api/v1/events.schema.json",
+  "title": "meshlink 结构化系统事件",
+  "description": "与 crates/mesh-common/src/events.rs SystemEvent 序列化格式一一对应。事件名集合见文档 17.2。",
+  "type": "object",
+  "required": ["event", "ts"],
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": [
+        "DEVICE_ONLINE", "DEVICE_OFFLINE",
+        "P2P_CONNECTED", "P2P_FAILED",
+        "PATH_SWITCHED",
+        "CIRCUIT_OPEN", "CIRCUIT_HALF_OPEN", "CIRCUIT_CLOSED",
+        "N2N_PROCESS_CRASH", "N2N_PROCESS_RESTARTED",
+        "SUPERNODE_DEGRADED", "SUPERNODE_OFFLINE", "SUPERNODE_RECOVERED",
+        "INVITE_USED", "INVITE_REVOKED",
+        "PASSWORD_AUTH_FAILED",
+        "CLOUDFLARE_TUNNEL_DOWN", "CLOUDFLARE_TUNNEL_RECOVERED"
+      ]
+    },
+    "ts": { "type": "string", "format": "date-time" },
+    "device_id": { "type": "string" },
+    "peer_id": { "type": "string" },
+    "sn_id": { "type": "string" },
+    "circuit_id": { "type": "string" },
+    "from_path": { "type": "string" },
+    "to_path": { "type": "string" },
+    "reason": { "type": "string" },
+    "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "pid": { "type": ["integer", "null"] },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "source_summary": {
+      "type": "string",
+      "description": "PASSWORD_AUTH_FAILED 专用：来源摘要哈希，禁止记录明文来源"
+    },
+    "hostname": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event": { "const": "PATH_SWITCHED" } } },
+      "then": {
+        "required": ["peer_id", "from_path", "to_path", "reason"],
+        "$comment": "文档 9.5：路径切换事件必须记录 from/to/reason/score"
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "PASSWORD_AUTH_FAILED" } } },
+      "then": { "required": ["source_summary"] }
+    }
+  ]
+}

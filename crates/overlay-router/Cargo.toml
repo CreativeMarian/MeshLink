@@ -1,0 +1,9 @@
+[package]
+name = "overlay-router"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mesh-common.workspace = true
+transport-api.workspace = true
+circuit-breaker.workspace = true

@@ -1,0 +1,23 @@
+来源说明 / SOURCE
+=================
+
+组件:   Wintun — Layer 3 TUN Driver for Windows
+版本:   0.14.1 (锁定, 禁止第三方修改版)
+官网:   https://www.wintun.net/
+下载:   https://www.wintun.net/builds/wintun-0.14.1.zip
+下载日期: 2026-08-30
+
+整包 ZIP SHA2-256:
+  07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
+
+各架构 wintun.dll SHA2-256 (见 SHA256SUMS):
+  amd64: e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce  ← 本项目运行时唯一使用
+  x86:   d694fa46ab4cfebcb2632d094c7aa97278eef2f8052438621766d863ae98a931
+  arm64: f7ba89005544be9d85231a9e0d5f23b2d15b3311667e2dad0debd344918a3f80
+  arm:   daad267411ecdc70a0535e274d2c3e9da3d0084bdac7662cb8424dd4a031b4d9
+
+分发规则:
+  1. 仅允许分发官方预编译签名 DLL (官方声明这是唯一受支持的分发方式)。
+  2. 禁止自行编译驱动 / 使用第三方修改版 / 从随机镜像下载。
+  3. 升级必须重新下载官方 ZIP -> 校验 SHA256 -> 更新 VERSION 与 SHA256SUMS。
+  4. meshlink 第一版 Windows x64 只随包分发 bin/amd64/wintun.dll。

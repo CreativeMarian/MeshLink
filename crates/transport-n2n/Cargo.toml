@@ -1,0 +1,30 @@
+[package]
+name = "transport-n2n"
+version.workspace = true
+edition.workspace = true
+description = "MeshLink N2N 3.0 baseline TransportProvider + Supernode (M1-2)"
+
+[[bin]]
+name = "n2n-supernode"
+path = "src/bin/n2n-supernode.rs"
+
+[dependencies]
+mesh-common.workspace = true
+transport-api.workspace = true
+circuit-breaker.workspace = true
+config-manager.workspace = true
+directlink = { path = "../directlink" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["sync"] }
+# N2N 3.0 社区层加密（n2n 3.0 用 AES-CCM；本实现以 AES-256-GCM 承载社区密钥加密）
+aes-gcm = "0.10"
+# 社区密钥派生（BLAKE2s，与 Noise 模式的 BLAKE2s 一致）
+blake2 = "0.10"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

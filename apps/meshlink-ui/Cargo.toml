@@ -1,0 +1,24 @@
+[package]
+name = "meshlink-ui"
+description = "MeshLink 桌面客户端（Tauri 2 UI；网络/密钥全部在 MeshAgentService 进程）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "MeshLink"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+mesh-ipc = { path = "../../crates/mesh-ipc" }
+controller-client = { path = "../../crates/controller-client" }
+serde.workspace = true
+serde_json.workspace = true
+
+[profile.dev]
+# UI 调试构建与 workspace 默认一致，无需覆盖

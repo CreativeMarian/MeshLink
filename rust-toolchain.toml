@@ -1,0 +1,5 @@
+# 项目级工具链锁定（M0-3 起切换）：
+# Windows 正式基线 = stable-x86_64-pc-windows-msvc（VS2022 BuildTools + Windows SDK）。
+# GNU 工具链保留用于兼容性验证，不再是主构建目标。
+[toolchain]
+channel = "stable-x86_64-pc-windows-msvc"

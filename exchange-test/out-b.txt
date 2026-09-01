@@ -1,0 +1,25 @@
+[host-b] NAT mapping: None
+[host-b] candidate: 192.168.10.147:42002 kind=Host base=192.168.10.147:42002
+[host-b] candidate: 127.0.0.1:42002 kind=Host base=127.0.0.1:42002
+[host-b] offer 已写入 .\exchange-test\offer-host-b.json
+[host-b] 等待对端 offer: .\exchange-test\offer-host-a.json（把对方机器的 offer 文件拷进本目录）
+[host-b] 收到对端 offer: id=host-a nat=None endpoints=2
+[host-b] 打洞成功（1.1ms）
+[host-b] RX #1 42B payload="DL-SMOKE-0-from-host-a"
+[host-b] RX #2 42B payload="DL-SMOKE-1-from-host-a"
+[host-b] RX #3 42B payload="DL-SMOKE-2-from-host-a"
+[host-b] RX #4 42B payload="DL-SMOKE-3-from-host-a"
+[host-b] RX #5 42B payload="DL-SMOKE-4-from-host-a"
+[host-b] RX #6 42B payload="DL-SMOKE-5-from-host-a"
+[host-b] RX #7 42B payload="DL-SMOKE-6-from-host-a"
+[host-b] RX #8 42B payload="DL-SMOKE-7-from-host-a"
+[host-b] RX #9 42B payload="DL-SMOKE-8-from-host-a"
+[host-b] RX #10 42B payload="DL-SMOKE-9-from-host-a"
+[host-b] smoke 10 帧已发送，等待对端 RX 打印
+[host-b] 保持运行（keepalive 15s/次，每 10s 打印 health），Ctrl+C 退出
+[host-b] health: score=100 rtt=Some(0.4614) loss=None alive=true
+[host-b] health: score=100 rtt=Some(0.4614) loss=None alive=true
+[host-b] health: score=100 rtt=Some(0.4614) loss=None alive=true
+[host-b] health: score=100 rtt=Some(0.4614) loss=None alive=true
+[host-b] health: score=100 rtt=Some(0.4614) loss=None alive=true
+[host-b] health: score=100 rtt=Some(0.4614) loss=None alive=true

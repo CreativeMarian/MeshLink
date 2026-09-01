@@ -1,0 +1,29 @@
+# Rust
+target/
+**/target/
+
+# Node
+node_modules/
+
+# Build
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Runtime
+runtime/
+
+# Temp
+tmp/
+
+# Secrets
+.env
+
+# OS
+Thumbs.db
+.DS_Store

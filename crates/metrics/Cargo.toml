@@ -1,0 +1,7 @@
+[package]
+name = "metrics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mesh-common.workspace = true

@@ -1,0 +1,823 @@
+﻿桌面智能组网系统
+产品需求与技术设计说明书
+P2P 直连优先 · N2N Supernode 兜底 · Cloudflare 控制面/灾备 · 多级熔断
+
+
+
+文档版本
+v1.0
+文档日期
+2026-08-29
+交付对象
+Trae（开发实施）
+第一阶段平台
+Windows 10 / 11 x64
+桌面技术栈
+Tauri 2 + Vue 3 + TypeScript + Rust
+服务端技术栈
+Go + SQLite/PostgreSQL
+
+目标：让普通用户只需要“输入 IP → 可选密码 → 点击连接 → 自动生成分享配置”；朋友只需要“导入配置 → 输入密码（如有）→ 连接”。
+
+0. 文档使用说明与开发结论
+本文档用于直接交给 Trae 进行项目开发。除标记为“后续版本/实验性”的内容外，均按第一版产品需求理解。开发过程中若底层第三方组件能力与本文冲突，以“用户体验不变、传输层可替换、控制面与数据面解耦”为最高原则。
+0.1 第一版必须遵守的 10 条原则
+普通用户不能被要求理解 N2N、STUN、ICE、Supernode、Cloudflare Tunnel、WARP、CIDR、端口映射等概念。
+管理员的日常创建流程必须保持：输入节点 IP → 选择是否设置密码 → 点击“创建并连接”。
+连接成功后必须自动生成可分享的 .meshjoin 配置，同时支持复制邀请链接；二维码可放入第二阶段。
+DirectLink P2P 必须独立于 N2N：即使 N2N edge 进程崩溃，DirectLink 仍可继续建立和维护 P2P。
+N2N 是可替换 Transport Provider，而不是整个产品的唯一网络核心。
+Cloudflare Tunnel 第一版主要承担 Controller/API/WebSocket Relay 的公网入口；不要把免费 Tunnel 错当成任意公网 UDP 端口映射。
+已建立的数据路径不能因为 Controller 暂时离线而立即中断；客户端需要缓存必要的 Peer/路径状态。
+所有敏感密钥必须安全存储，分享配置不得包含 Cloudflare API Token、Tunnel Token、管理员 Token 或永久网络私钥。
+路径切换必须具备熔断、半开探测、防抖、自动回切机制，避免线路频繁抖动。
+第一版优先把 Windows 端做稳定，再为 macOS/Linux 预留接口，不要求第一版同时跨平台。
+0.2 Cloudflare 的正确定位（必须按此实现）
+能力
+第一版定位
+说明
+Cloudflare Tunnel（公网 HTTP/HTTPS）
+必须
+用于 Controller API、WebSocket、下载/邀请入口；源站无需公网 IP。
+Cloudflare WebSocket Relay
+必须作为最终灾备
+客户端走 HTTPS/WSS 连接到 Relay，适合“不要求朋友安装 WARP”的零公网入口兜底。
+Cloudflare Zero Trust Private Network + One Client/WARP
+可选/实验
+可用于访问 Tunnel 后的私网资源；用户设备必须加入组织。
+N2N Supernode 直接通过免费 Tunnel 暴露公网 UDP
+禁止作为前提
+免费 Tunnel 不是通用公网 UDP 端口映射；生产 N2N Supernode 建议使用有公网 UDP 的节点。
+
+技术边界：Cloudflare 官方文档说明 Tunnel 通过 outbound-only 连接将源站接入 Cloudflare；私网路由需要终端连接到 Cloudflare 并加入 Zero Trust 组织。Free Zero Trust 当前定位为 50 用户以内。相关资料见文末参考资料。
+目录
+1. 项目定位与产品目标
+2. 角色与使用场景
+3. 极简用户流程
+4. 总体系统架构
+5. 客户端与管理员端架构
+6. DirectLink 独立 P2P 引擎
+7. N2N 引擎与 Supernode 节点池
+8. Cloudflare 方案与部署模式
+9. 路径调度、熔断与故障转移
+10. 分享配置与导入配置系统
+11. 自定义密码与安全认证
+12. Controller 控制服务
+13. 数据模型与数据库设计
+14. API 与 WebSocket 设计
+15. 管理员桌面端 UI
+16. 普通客户端 UI
+17. 监控、流量统计与事件中心
+18. Agent 与系统服务
+19. 安装、部署与自动升级
+20. 项目目录与模块边界
+21. 开发阶段与里程碑
+22. 测试计划
+23. 验收标准
+24. 风险、限制与后续演进
+25. Trae 开发执行清单
+附录 A. 配置格式
+附录 B. 建议默认参数
+附录 C. 参考资料
+1. 项目定位与产品目标
+本项目是一套面向 Windows 桌面环境的智能虚拟局域网/组网系统。系统由“管理员桌面控制台”和“普通客户端”组成，并配套 Controller、Node Agent、DirectLink P2P 引擎、N2N edge/supernode 以及 Cloudflare 接入组件。
+核心目标不是制作一个 N2N GUI，而是建立一层可自主管理、可自动调度、可熔断、可替换底层传输的 Overlay 网络平台。
+1.1 产品目标
+P2P 直连优先：尽量让两台设备直接 UDP 通信，降低延迟并减少中继流量。
+N2N 兜底：P2P 失败时可使用 N2N Supernode 进行中继；支持多个 Supernode 与健康调度。
+N2N 故障时仍可 P2P：DirectLink 与 N2N 相互独立，N2N 进程故障不得阻塞 P2P。
+Cloudflare 免公网入口：Controller 与 WebSocket Relay 可部署在无公网 IP 的机器上，通过 Tunnel 提供稳定域名入口。
+极简使用：管理员输入 IP 即可创建连接；朋友导入配置即可加入。
+可选密码：创建者可启用或禁用网络访问密码。
+自动调度：根据 RTT、丢包、抖动、节点负载、故障次数等自动选择最优路径。
+实时可观测：管理员可以查看在线设备、路径、拓扑、流量、节点状态与告警。
+1.2 非目标（第一版不做）
+不做完整企业 IAM/SSO 平台。
+不做手机端。
+不做复杂 SD-WAN 全功能路由器能力。
+不要求第一版实现内核级 WireGuard 替代。
+不承诺 Cloudflare Tunnel 免费版提供任意公网 UDP 入口。
+不以“修改 Windows 路由表绕过所有网络限制”为卖点。
+2. 角色与使用场景
+角色
+软件
+主要权限
+管理员/创建者
+Admin Console
+创建网络、输入 IP 连接节点、设置密码、生成邀请、管理设备、配置策略、查看监控、管理 Supernode/Cloudflare。
+普通成员/朋友
+Client
+导入 .meshjoin、输入密码（如有）、连接/断开、查看基本状态、复制虚拟 IP。
+节点主机
+Node Agent/Service
+运行 DirectLink、N2N、虚拟网卡、健康检查、指标采集、策略执行。
+控制服务器
+Controller
+认证、配置下发、Peer 发现、Candidate 交换、Supernode 调度、事件与统计。
+
+2.1 典型场景
+1.  用户在家中/办公室的一台 Windows 主机安装 Node Agent。
+2.  管理员控制台输入该主机 IP，例如 192.168.1.50。
+3.  管理员选择“无密码”或“使用自定义密码”，点击“创建并连接”。
+4.  系统自动完成 Agent 检测、网络初始化、P2P/N2N/Cloudflare 状态检测、虚拟网段创建。
+5.  成功后自动生成“我的网络.meshjoin”。
+6.  管理员把配置文件发给朋友。
+7.  朋友双击或在普通客户端中导入，输入密码（如启用），点击连接。
+8.  系统优先 DirectLink P2P，失败后选择 N2N 路径，最终可用 Cloudflare WebSocket Relay 灾备。
+3. 极简用户流程
+3.1 管理员快速创建
+快速创建网络节点 IP： [ 192.168.1.50              ]访问密码：(●) 不使用密码( ) 使用自定义密码  [ ************** ]             [ 创建并连接 ]
+“创建并连接”后，UI 仅显示必要进度，不显示底层命令行参数。建议状态：检测 Agent → 创建网络 → 配置 P2P → 配置 N2N → 配置 Cloudflare → 健康检查 → 生成分享配置。
+3.2 创建成功
+✓ 网络创建成功网络名称：我的网络-7A31虚拟网段：10.70.31.0/24本机虚拟 IP：10.70.31.1当前路径：P2P 直连备用：N2N / Cloudflare Relay[ 保存分享配置 ]   [ 复制邀请链接 ]
+3.3 朋友加入
+发现网络邀请网络：我的网络-7A31创建者：PC-01安全：需要密码 / 无密码密码：[                 ]   （仅有密码时显示）               [ 连接 ]
+导入后真正的 Supernode 列表、STUN 列表、策略、密钥轮换信息等均由 Controller 动态下发，不固化在分享文件中。
+3.4 输入 IP 的技术前提
+开发约束：“只输入 IP”是产品操作体验，不代表远端机器无需任何组件。目标 IP 对应机器必须已安装并运行 Mesh Node Agent；如果未安装，管理员端应提示“未检测到 Agent”，并提供安装包/安装指引。第一版不做无凭证远程安装。
+
+4. 总体系统架构
+                         ┌─────────────────────┐                         │   Admin Console      │                         └─────────┬───────────┘                                   │ HTTPS/WSS                          Cloudflare Tunnel                                   │                         ┌─────────▼───────────┐                         │     Controller      │                         │ Auth / Network /    │                         │ Scheduler / Metrics │                         └─────────┬───────────┘                                   │ 配置/心跳/候选地址               ┌───────────────────┼───────────────────┐               ▼                   ▼                   ▼        ┌────────────┐      ┌────────────┐      ┌────────────┐        │ Client A   │      │ Client B   │      │ Client C   │        │ Mesh Agent │      │ Mesh Agent │      │ Mesh Agent │        └─────┬──────┘      └─────┬──────┘      └─────┬──────┘              │                   │                   │              ├──── DirectLink UDP P2P（优先） ──────┤              │                   │                   │              └──── N2N P2P / Supernode Relay ──────┘                                   │                          Cloudflare WSS Relay                           （最终灾备路径）
+4.1 四层架构
+层
+模块
+职责
+UI 层
+Admin Console / Client
+操作、展示、日志、配置入口。
+控制层
+Controller
+设备注册、配置、Peer 发现、调度、策略、统计。
+本机网络层
+Mesh Agent + Overlay Router
+虚拟网卡、包转发、路径选择、熔断、加密会话。
+传输层
+DirectLink / N2N / Cloudflare Relay
+提供不同路径的报文承载。
+
+4.2 关键解耦
+虚拟网卡生命周期不得绑定 n2n edge.exe 生命周期。
+Overlay Router 只面向统一 Transport 接口，不直接写死 N2N 调用。
+Controller 只负责控制信息，不承载普通 P2P 数据。
+Cloudflare 与 N2N 都是可替换依赖；核心设备身份、IP、网络成员关系由本系统维护。
+5. 客户端与管理员端架构
+5.1 推荐技术栈
+组件
+技术
+说明
+Admin Console
+Tauri 2 + Vue 3 + TypeScript
+体积小、前端开发效率高；调用 Rust 本地能力。
+普通 Client
+Tauri 2 + Vue 3 + TypeScript
+与管理员端共享组件库与状态模型。
+Mesh Agent Service
+Rust
+Windows Service；负责长期稳定运行、网络与进程控制。
+Controller
+Go
+适合并发连接、REST/WebSocket、单文件部署。
+数据库
+SQLite → PostgreSQL
+单机第一版 SQLite；多人/生产切 PostgreSQL。
+N2N
+官方源码固定版本自构建
+Windows 产物建议自己 CI 构建并锁版本。
+Cloudflare
+cloudflared + API
+Controller/Relay 入口；管理员首次授权后自动管理。
+
+5.2 本机进程关系
+Admin/Client UI.exe      │ IPC（命名管道/本地 RPC）      ▼MeshAgentService.exe  ← Windows Service      │      ├─ Overlay Router / Virtual NIC      ├─ DirectLink Engine      ├─ N2N Process Supervisor ── edge.exe      ├─ Circuit Breaker Manager      ├─ Metrics Collector      └─ Update Manager
+6. DirectLink 独立 P2P 引擎
+DirectLink 是本项目必须自研或基于成熟 ICE 库封装的独立 P2P 数据通道。它不能依赖 N2N supernode、N2N edge 或 N2N management API 才能工作。
+6.1 功能
+STUN 获取公网映射地址。
+收集 host/server-reflexive 等候选地址。
+通过 Controller 交换 Candidate。
+UDP Hole Punch / ICE Connectivity Check。
+Keepalive 保持 NAT Binding。
+会话密钥协商与报文加密。
+路径 RTT/丢包/抖动测量。
+MTU 探测与分片策略。
+断线重连与 endpoint 更新。
+6.2 DirectLink 状态机
+IDLE → GATHERING → CHECKING → READY → ACTIVE                       ↓失败        ↓异常                     FAILED ← DEGRADEDACTIVE 出现持续异常：进入 DEGRADED，Path Manager 可切换到 N2N/Relay；后台继续 CHECKING，恢复后满足回切条件再切回。
+6.3 热备要求
+即使当前业务正在走 N2N Relay，也应保持 DirectLink 的 Candidate 信息和低频 Keepalive，以便 N2N 出现故障时快速切回 P2P，而不是故障后才从零开始 STUN/打洞。
+7. N2N 引擎与 Supernode 节点池
+N2N 官方机制会优先尝试 edge 之间 UDP P2P，无法直连时由 supernode 中继，并支持一个 edge 配置多个 supernode。系统应利用这一能力，但不能把 N2N 作为唯一数据面。
+7.1 N2N Provider 封装接口
+trait TransportProvider {    start(session_config)    stop()    send(peer_id, packet)    health() -> HealthSnapshot    peer_path(peer_id) -> PathInfo    stats() -> TransportStats}Providers:- DirectLinkProvider- N2NProvider- CloudflareWsRelayProvider
+7.2 Supernode 节点池
+字段
+类型/示例
+用途
+id
+sn_hk_01
+唯一 ID
+region
+HK
+地区
+host
+1.2.3.4
+公网地址
+port
+7654/UDP
+N2N 服务端口
+status
+healthy/degraded/offline
+健康状态
+rtt_ms
+42
+调度
+loss_pct
+0.4
+调度
+cpu_pct
+18
+负载
+mem_pct
+30
+负载
+relay_peers
+27
+负载
+bandwidth_bps
+...
+流量
+failure_count_1h
+2
+稳定性
+last_heartbeat
+timestamp
+故障判断
+
+7.3 N2N 管理采集
+N2N edge 和 supernode 均提供 UDP 管理接口，默认 edge 管理端口 5644、supernode 5645，并支持机器可读 JSON 查询。生产环境中管理接口仅绑定 localhost，由本机 SN-Agent/MeshAgent 读取后上报 Controller，禁止直接开放到公网。
+8. Cloudflare 方案与部署模式
+8.1 模式 A：第一版推荐 - Tunnel 控制面 + WebSocket 灾备
+朋友 Client ──HTTPS/WSS──► Cloudflare Edge                            │                       Cloudflare Tunnel                            │                  ┌─────────▼─────────┐                  │ Controller / Relay│                  │ 127.0.0.1:8080    │                  └───────────────────┘
+优点：朋友不需要 Cloudflare 账号、不需要安装 WARP；Controller 所在机器不需要公网 IP 或开放 80/443。WebSocket Relay 可作为所有 UDP/N2N 均不可用时的最终灾备。
+Cloudflare WebSocket Relay 设计
+客户端通过 wss://relay.example.com/v1/relay 建立长期连接。
+应用层帧包含 network_id、source_peer、target_peer、sequence、ciphertext。
+Relay 不持有端到端业务明文密钥，仅转发密文帧。
+Relay 只作为最后一级路径，避免长期占用带宽。
+必须限速、限连接数、限单包大小，并记录每设备流量。
+8.2 模式 B：公网 UDP N2N Supernode（生产推荐）
+对于 N2N Supernode，最可靠做法仍是拥有公网 UDP 的 VPS/主机。Controller 可以通过 Cloudflare Tunnel 隐藏，但 N2N supernode 端口直接对外提供 UDP。Supernode 可以多节点部署，并由 Scheduler 返回 Primary + Backup 列表。
+8.3 模式 C：Cloudflare Private Network + WARP（可选实验）
+Cloudflare 私网路由能够让加入 Zero Trust 组织的终端访问 Tunnel 后的非 HTTP 私网资源。该模式要求朋友设备安装 Cloudflare One Client/WARP 并完成组织注册。因此不作为普通用户默认流程。
+实验性功能：如果要尝试“N2N Supernode 放在 Cloudflare 私网后”，必须单独做 PoC 验证 UDP 会话、源地址/源端口保持、N2N 注册与中继行为，测试通过后才允许进入正式功能。不要把它写成 MVP 必然可行的依赖。
+
+8.4 Cloudflare 首次初始化
+1.  管理员进入“设置 → Cloudflare”。
+2.  填写/授权最小权限 API Token，选择 Account/Zone。
+3.  系统创建或绑定 Tunnel，生成 Controller Hostname 与 Relay Hostname。
+4.  Controller 机器安装 cloudflared，并以系统服务运行。
+5.  以后创建网络不再要求管理员输入 Cloudflare 参数。
+9. 路径调度、熔断与故障转移
+9.1 推荐路径优先级
+1. DirectLink P2P      ↓不可用2. N2N P2P      ↓不可用3. Primary N2N Supernode Relay      ↓不可用4. Backup N2N Supernode Relay      ↓不可用5. Cloudflare WebSocket Relay
+Path Manager 可并行探测多个候选路径，但任何时刻每个 Peer 只选择一个 Active Path；迁移时需考虑现有会话与乱序。
+9.2 熔断器层级
+熔断对象
+示例触发条件
+动作
+Supernode Circuit
+连续 3 次健康探测失败 / 10 秒不可达
+将该 SN 从调度池摘除，切换 Backup。
+N2N Relay Circuit
+高丢包、无数据、ACK 超时、管理接口异常
+停止经该 relay 发送新业务，优先 DirectLink 或其他 SN。
+N2N Provider Circuit
+edge.exe 崩溃、进程卡死、socket/TAP 异常
+整个 N2N Provider OPEN；DirectLink/Cloudflare 不受影响。
+DirectLink Circuit
+ICE path 连续失败、NAT 映射失效
+切 N2N；后台继续重新打洞。
+Cloudflare Relay Circuit
+WSS 连接异常、延迟/丢包过高
+最后路径不可用时提示网络降级/断开。
+
+9.3 三态熔断器
+CLOSED（正常）  └─ 连续失败达到阈值 → OPENOPEN（熔断）  └─ 冷却时间到 → HALF_OPENHALF_OPEN（半开）  ├─ 连续探测成功 → CLOSED  └─ 再次失败 → OPEN
+9.4 Path Health Score
+建议健康分不只看 Ping，应综合 RTT、Jitter、Loss、发送停滞、ACK Timeout、Keepalive、进程健康、Socket 状态。第一版可使用如下默认权重：
+指标
+权重
+说明
+RTT
+30%
+延迟
+Packet Loss
+25%
+丢包
+Jitter
+10%
+抖动
+ACK/数据停滞
+15%
+真实业务可用性
+Transport Health
+10%
+进程/Socket
+稳定性历史
+10%
+近期故障次数
+
+Score 90-100=Healthy；70-89=Degraded；40-69=Warning；0-39=Critical。Critical 持续 3 秒可以触发路径切换，具体阈值需在测试中调参。
+9.5 防抖与自动回切
+新路径至少连续健康 10 秒后才允许抢占。
+新路径质量需比当前路径高至少 20%，或当前路径已经 DEGRADED。
+同一 Peer 两次路径切换最小间隔建议 15 秒。
+切回 P2P 前至少完成 3 次连续 connectivity check。
+路径切换事件必须写入事件中心，记录 from/to/reason/score。
+10. 分享配置与导入配置系统
+10.1 文件类型
+扩展名
+用途
+是否可转发
+.meshjoin
+首次邀请加入网络
+可转发，但受邀请 Token/密码/过期策略限制
+.meshprofile
+设备备份/迁移（后续）
+包含更多设备资料，必须额外加密，不建议普通分享
+
+10.2 .meshjoin 设计原则
+文件尽可能小，只保存“如何找到 Controller + 如何证明这是一份有效邀请”。
+不得保存 Cloudflare API Token、Tunnel Token、管理员 Token。
+不得保存可长期复用的网络主密钥。
+必须带 Controller 公钥指纹/签名，避免恶意配置劫持到伪造服务器。
+Invite Token 可设置一次性/多次、有效期、是否需要审批。
+10.3 推荐结构
+{  "format": "meshjoin",  "version": 1,  "network": { "id": "net_8f21ac", "name": "我的网络-7A31" },  "controller": {    "url": "https://control.example.com",    "fingerprint": "SHA256:..."  },  "invite": {    "id": "inv_xxx",    "token": "one-time-or-limited-token",    "expires_at": "2026-08-30T22:00:00+08:00"  },  "flags": { "password_required": true },  "signature": "..."}
+10.4 双击导入
+Windows 安装器注册 .meshjoin 文件关联。双击配置直接打开普通 Client 的“加入网络”确认页。第二阶段可注册自定义 URI：meshlink://join/<token>。
+11. 自定义密码与安全认证
+11.1 用户体验
+创建网络时提供“无密码 / 使用自定义密码”二选一。启用密码后，朋友导入 .meshjoin 时必须输入正确密码才允许完成设备注册。
+11.2 密码存储
+Controller 只保存 Argon2id 密码验证值（salt + hash + 参数），不保存明文。
+客户端输入密码后通过 TLS 发送到 Controller 的认证接口；更严格实现可使用 PAKE，但第一版可先用 TLS + 速率限制。
+分享配置只保存 password_required=true，不保存密码。
+管理员可修改密码或取消密码。
+11.3 修改密码策略
+选项
+行为
+仅新设备使用新密码
+已有已授权设备 Token/证书继续有效，新加入必须新密码。
+要求全部设备重新认证
+吊销现有网络成员会话/设备授权，下一次连接必须重新输入密码。
+
+11.4 防暴力破解
+单 IP/单设备 5 次失败后指数退避。
+服务端记录失败事件与来源摘要。
+邀请 Token 与密码验证双重校验。
+管理员可撤销邀请、踢出设备、吊销设备证书。
+12. Controller 控制服务
+12.1 核心模块
+模块
+职责
+Auth Service
+设备注册、Token、证书、密码验证、邀请校验。
+Network Service
+网络、虚拟网段、成员、固定 IP。
+Peer Discovery
+在线 Peer、Endpoint、Candidate 交换。
+Supernode Service
+节点注册、心跳、能力、维护状态。
+Scheduler
+根据质量/地区/负载返回 Primary/Backup。
+Policy Engine
+路径优先级、强制 Relay、地区策略等。
+Metrics Service
+流量、RTT、Loss、CPU、Memory、Relay。
+Event Service
+故障、切换、上线、离线、登录、密码失败。
+Cloudflare Service
+Tunnel/域名状态与配置（管理员权限）。
+
+12.2 Controller 不应承载的职责
+不直接转发常规 P2P 业务流量。
+不要求每个包经过服务器授权。
+不把设备私钥保存在服务器。
+控制面临时不可用时，不主动让现有 Peer 断链。
+13. 数据模型与数据库设计
+第一版 SQLite 可满足单管理员/小团队；数据访问层必须避免使用 SQLite 特有逻辑，便于切换 PostgreSQL。
+表
+关键字段
+users
+id, username, password_hash, role, created_at
+networks
+id, name, cidr, owner_id, password_enabled, password_hash, created_at
+devices
+id, network_id, name, public_key, virtual_ip, status, last_seen, revoked_at
+invites
+id, network_id, token_hash, expires_at, max_uses, used_count, require_approval, revoked_at
+peer_endpoints
+device_id, endpoint_type, ip, port, priority, last_seen
+supernodes
+id, region, host, port, status, weight, maintenance, agent_version
+supernode_metrics
+supernode_id, ts, rtt, loss, cpu, mem, relay_peers, tx_bytes, rx_bytes
+device_metrics
+device_id, ts, active_path, rtt, loss, tx_bytes, rx_bytes
+path_events
+id, device_id, peer_id, from_path, to_path, reason, ts
+policies
+id, network_id, type, json_config, priority
+cloudflare_config
+account/zone/tunnel references; secrets stored encrypted/outside DB where possible
+audit_logs
+actor, action, target, result, ts, metadata
+
+13.1 虚拟 IP 分配
+默认每个网络分配一个 /24 私有网段，例如 10.70.31.0/24。Controller 保证 virtual_ip 唯一。设备重连优先复用原 IP，管理员可固定。后续需要大量成员时扩展到 /16。
+14. API 与 WebSocket 设计
+14.1 REST API（建议）
+方法
+路径
+用途
+POST
+/api/v1/auth/login
+管理员登录
+POST
+/api/v1/invites/resolve
+解析邀请
+POST
+/api/v1/devices/enroll
+设备注册/密码验证
+POST
+/api/v1/devices/heartbeat
+设备心跳
+GET
+/api/v1/networks/:id/config
+拉取动态配置
+GET
+/api/v1/networks/:id/peers
+Peer 列表
+POST
+/api/v1/peers/candidates
+上报 Candidate
+GET
+/api/v1/supernodes/recommend
+获取 Primary/Backup
+POST
+/api/v1/supernodes/heartbeat
+SN-Agent 心跳
+GET
+/api/v1/metrics/summary
+Dashboard 数据
+POST
+/api/v1/invites
+创建邀请
+POST
+/api/v1/networks/:id/password
+修改/关闭网络密码
+
+14.2 WebSocket 控制通道
+wss://control.example.com/v1/ws事件示例：- peer.online / peer.offline- candidate.update- policy.update- supernode.changed- network.revoked- path.reprobe- server.notice
+14.3 WebSocket Relay 数据通道
+wss://relay.example.com/v1/relayBinary Frame Header：magic | version | network_id | source_peer | target_peer | seq | flags | ciphertext_lenPayload：end-to-end encrypted overlay packet
+15. 管理员桌面端 UI
+15.1 页面结构
+总览 Dashboard
+快速创建
+网络管理
+设备管理
+Supernode 节点池
+路径策略
+实时拓扑
+监控
+流量统计
+事件/告警
+Cloudflare
+设置/升级/日志
+15.2 Dashboard 核心卡片
+指标
+示例
+网络数
+5
+设备数
+38
+在线
+31
+Direct P2P
+24
+N2N Relay
+6
+Cloudflare Relay
+1
+Supernode Healthy
+5/6
+P2P 流量占比
+87%
+
+15.3 Supernode 页面
+列
+内容
+名称
+SN-HK-01
+地区
+香港
+状态
+Healthy/Degraded/Offline/Maintenance
+RTT
+31 ms
+丢包
+0.2%
+CPU
+18%
+中继会话
+82
+带宽
+21 Mbps
+最后心跳
+3 s ago
+
+15.4 路径策略
+自动：Direct First → Best Relay。
+最低延迟：可用路径中优先最低 RTT。
+地区优先：HK → SG → JP 等。
+固定 Supernode：Direct 失败后固定某 SN。
+仅 P2P：禁止中继。
+强制 Relay：用于测试/特殊环境。
+16. 普通客户端 UI
+16.1 首页
+我的网络-7A31                      已连接虚拟 IP：10.70.31.12当前路径：P2P 直连延迟：23 ms    丢包：0.2%↑ 1.25 GB      ↓ 3.68 GB[断开]   [复制虚拟 IP]
+默认不展示 N2N community、Supernode IP、Cloudflare Tunnel UUID 等技术信息。高级页面可查看诊断信息，但不能要求用户理解。
+16.2 导入入口
+拖拽 .meshjoin 到窗口。
+点击“导入配置”。
+双击 .meshjoin 文件。
+第二阶段：点击 meshlink://join/... 邀请链接。
+17. 监控、流量统计与事件中心
+17.1 统计维度
+维度
+指标
+网络
+总 TX/RX、P2P 比例、Relay 比例、在线设备数
+设备
+TX/RX、RTT、Loss、Active Path、重连次数
+Peer Path
+RTT、Jitter、Loss、Health Score、切换次数
+Supernode
+CPU、Memory、Relay peers、TX/RX、故障率
+Cloudflare Relay
+连接数、TX/RX、WSS RTT、错误率
+
+17.2 事件
+DEVICE_ONLINE / DEVICE_OFFLINE
+P2P_CONNECTED / P2P_FAILED
+PATH_SWITCHED
+CIRCUIT_OPEN / HALF_OPEN / CLOSED
+N2N_PROCESS_CRASH / RESTARTED
+SUPERNODE_DEGRADED / OFFLINE / RECOVERED
+INVITE_USED / INVITE_REVOKED
+PASSWORD_AUTH_FAILED
+CLOUDFLARE_TUNNEL_DOWN / RECOVERED
+18. Agent 与系统服务
+18.1 MeshAgentService 职责
+Windows Service 自启动。
+维护虚拟网卡与 Overlay Router。
+管理 DirectLink。
+启动/停止/监控 n2n edge.exe。
+维护 Controller WebSocket。
+采集网络/系统指标。
+执行熔断和路径切换。
+安全保存设备密钥。
+执行自动升级与回滚。
+向 UI 提供本地 IPC。
+18.2 N2N Process Supervisor
+检测 edge.exe 崩溃：T+0    N2N Provider Circuit → OPENT+0    Path Manager 优先切 DirectLink/其他 RelayT+2s   后台尝试启动 edge.exe成功   → HALF_OPEN，执行健康探测连续探测成功 → CLOSED失败   → 指数退避重试，但不得阻塞其他 Transport
+18.3 权限
+安装器以管理员权限安装 Windows Service、虚拟网卡驱动/适配器及必要防火墙规则。日常 UI 不要求管理员权限；高权限操作通过受控 IPC 请求 Service 执行。
+19. 安装、部署与自动升级
+19.1 安装包
+包
+内容
+MeshAdminSetup.exe
+管理员 UI + MeshAgentService + N2N edge + cloudflared（可选）
+MeshClientSetup.exe
+普通 UI + MeshAgentService + N2N edge
+MeshNodeAgentSetup.exe
+仅 Agent/Service，用于被输入 IP 的节点
+Controller
+独立 Go 二进制/服务，可由 Admin 初始化到目标节点
+
+19.2 Cloudflare Controller 部署
+1.  Controller 监听 127.0.0.1:8080 或局域网安全地址。
+2.  cloudflared 创建出站 Tunnel。
+3.  control.example.com → http://127.0.0.1:8080。
+4.  relay.example.com → http://127.0.0.1:8081（可同进程不同路由）。
+5.  管理员端定期检查 Tunnel health；异常写入事件中心。
+19.3 自动升级
+所有组件使用语义化版本。
+Agent 与 UI 可分开版本。
+更新包签名校验。
+升级失败自动回滚上一个可用版本。
+N2N/cloudflared 版本固定并纳入兼容矩阵。
+20. 项目目录与模块边界
+meshlink/├─ apps/│  ├─ admin-desktop/          # Tauri + Vue 管理端│  └─ client-desktop/         # Tauri + Vue 普通端├─ crates/│  ├─ mesh-agent/             # Windows Service│  ├─ overlay-router/│  ├─ directlink/│  ├─ transport-api/│  ├─ transport-n2n/│  ├─ transport-cf-ws/│  ├─ circuit-breaker/│  ├─ metrics/│  └─ secure-store/├─ server/│  └─ controller/             # Go├─ agents/│  └─ supernode-agent/        # Go/Rust 均可├─ third_party/│  └─ n2n/                    # 固定版本或构建脚本├─ deploy/│  ├─ cloudflare/│  ├─ windows/│  └─ controller/├─ schemas/                   # API/配置 JSON schema/protobuf├─ docs/└─ tests/
+20.1 IPC
+UI 与 Agent 推荐使用 Windows Named Pipe + JSON-RPC/MessagePack，或 localhost gRPC（需严格鉴权）。禁止让普通 UI 直接控制 edge.exe/cloudflared。
+21. 开发阶段与里程碑
+阶段
+目标
+主要交付
+M0 技术 PoC
+验证核心路径
+虚拟网卡、DirectLink P2P、N2N edge、N2N SN、Cloudflare Tunnel + WSS Relay。
+M1 单机 MVP
+完成极简创建/加入
+Admin 输入 IP、Agent、无密码/有密码、.meshjoin、虚拟 IP、基础连接。
+M2 多路径
+实现自动容灾
+Supernode Pool、Scheduler、熔断器、P2P/N2N/CF Relay 切换。
+M3 管理与监控
+产品化管理员端
+设备、网络、策略、拓扑、流量、事件。
+M4 稳定性
+长期运行
+崩溃恢复、升级回滚、压力测试、安全加固。
+M5 可选 Cloudflare 私网
+实验
+WARP/Private Network N2N SN PoC，通过才合并。
+
+21.1 M0 必须先验证的 6 个问题
+Windows 虚拟网卡稳定创建与包收发。
+两台不同 NAT Windows 主机 DirectLink UDP Hole Punch。
+N2N Windows edge 与自建 Supernode 的稳定性。
+N2N edge 进程强杀后虚拟网卡/DirectLink 是否继续可用。
+Cloudflare Tunnel 后 WSS 长连接能否稳定承载加密 overlay 帧。
+路径切换时对 ICMP/TCP/UDP 会话的影响和可接受恢复时间。
+22. 测试计划
+22.1 网络环境矩阵
+场景
+必须测试
+同一 LAN
+DirectLink 局域网直连
+两端普通家庭 NAT
+UDP 打洞
+一端 CGNAT
+P2P 成功率 + Relay
+双端严格 NAT
+N2N Supernode/CF Relay
+UDP 被阻断
+Cloudflare WSS Relay
+Controller 断网
+已有连接继续
+N2N edge 强杀
+DirectLink 继续 + 自动重启
+Primary SN 强杀
+切 Backup
+高丢包/高延迟
+熔断与防抖
+Cloudflare Tunnel 断开
+已有 P2P/N2N 不受影响
+
+22.2 安全测试
+伪造 .meshjoin 签名必须被拒绝。
+过期/撤销 Invite 必须被拒绝。
+密码错误连续尝试触发限速。
+设备证书吊销后不能重新连入。
+抓包不能得到明文业务数据/网络密码。
+本地敏感配置文件权限正确。
+WebSocket Relay 不能跨 network_id 转发。
+22.3 稳定性
+72 小时持续连接。
+每分钟随机断开/恢复网络接口。
+100+ 次路径切换不泄漏资源。
+Agent 崩溃/重启后网络状态可恢复。
+Controller 重启后客户端自动重连并恢复订阅。
+23. 第一版验收标准
+管理员能安装软件，在目标 Agent 已安装的前提下，只输入 IP、选择密码模式、点击一次即可创建网络。
+创建成功自动生成 .meshjoin；朋友导入后可以加入。
+启用密码时，错误密码不能加入；关闭密码时不弹密码输入。
+两台可打洞设备优先显示 Direct P2P。
+Direct P2P 不可用时自动使用 N2N P2P/Supernode Relay。
+强杀 n2n edge.exe 后，如果 DirectLink 已可用，应能自动切到/保持 DirectLink，不要求用户操作。
+Primary Supernode 掉线能切 Backup；恢复后按防抖规则回切。
+Controller 经 Cloudflare Tunnel 在无公网 IP 场景可被朋友客户端访问。
+UDP/N2N 均不可用时，Cloudflare WSS Relay 能作为最后灾备进行基本 IP 数据传输。
+管理员能看到设备在线状态、当前路径、RTT、丢包、流量、Supernode 健康与路径切换事件。
+Controller 临时重启不应主动断开已有 DirectLink/N2N 数据通道。
+分享文件不包含 Cloudflare Token、管理员凭证、明文密码。
+24. 风险、限制与后续演进
+24.1 主要风险
+风险
+处理方式
+不同 NAT/运营商环境导致 P2P 成功率差异
+依赖多 STUN、端口预测策略、N2N/CF Relay 兜底；收集匿名质量指标。
+N2N Windows 构建/兼容性
+锁定版本，自建 CI；N2N 作为可替换 Provider。
+路径切换造成 TCP 会话中断
+稳定虚拟 IP/网卡，尽量在 Overlay 层切承载；测试并优化重排序/迁移。
+Cloudflare 免费策略未来变化
+Cloudflare 只作为可替换入口/最终灾备，不把产品核心身份绑定 Cloudflare。
+WSS Relay 带宽成本/公平使用限制
+仅灾备、限速、统计；生产规模扩大可换自建公网 Relay。
+“输入 IP 一键部署”被误解为无 Agent 远程控制
+产品明确 Agent 前置；后续可增加安装码/远程引导。
+
+24.2 后续功能
+macOS/Linux 客户端。
+二维码/深度链接邀请。
+多管理员/组织/SSO。
+按应用/端口的 ACL。
+子网路由、出口节点。
+自建 TURN/QUIC Relay。
+Cloudflare Mesh/Private Network 更深集成。
+多 Controller 高可用。
+自定义域名自动证书与域名向导。
+25. Trae 开发执行清单
+25.1 开发顺序（不要跳过）
+1.  建立 mono-repo、公共 schemas 与日志规范。
+2.  做 MeshAgentService 最小骨架 + UI IPC。
+3.  实现稳定虚拟网卡抽象与 Overlay Router。
+4.  实现 DirectLink PoC：STUN/Candidate/UDP Hole Punch/加密 Session。
+5.  封装 N2NProvider，能启动/停止 edge、读取 management API、上报状态。
+6.  实现 Controller 基础：网络/设备/邀请/候选地址/WebSocket。
+7.  实现“输入 IP → 连接 Agent → 创建网络”。
+8.  实现无密码/自定义密码两种加入流程。
+9.  实现 .meshjoin 生成、签名、文件关联、导入。
+10.  实现 Supernode Pool + Scheduler。
+11.  实现 Circuit Breaker Manager + Path Manager。
+12.  实现 Cloudflare Tunnel 初始化与 Controller 域名入口。
+13.  实现 Cloudflare WSS Relay Provider。
+14.  完成 Admin Dashboard、设备/SN/策略/监控/事件。
+15.  执行完整网络矩阵与故障注入测试。
+16.  最后再评估 Cloudflare Private Network/WARP N2N SN 实验功能。
+25.2 代码质量硬性要求
+所有网络状态机必须可单元测试。
+所有外部进程必须有 Supervisor，不允许 UI 直接 spawn 后不管。
+所有 API 使用 versioned path。
+错误码与用户提示分离。
+所有敏感日志默认脱敏。
+N2N/cloudflared 调用必须集中封装。
+TransportProvider 与 PathManager 不允许互相硬编码具体进程名。
+关键切换必须包含结构化 event log。
+后台线程/异步任务必须支持 cancellation。
+升级前必须保留可回滚版本。
+附录 A. 配置格式建议
+A.1 本地设备配置（不可分享）
+device.json{  "device_id": "dev_xxx",  "device_name": "PC-01",  "controller": "https://control.example.com",  "networks": ["net_xxx"],  "secure_key_ref": "windows-dpapi:...",  "last_good_paths": {...}}
+A.2 动态网络配置（Controller 下发）
+{  "network_id": "net_xxx",  "virtual_ip": "10.70.31.12",  "cidr": "10.70.31.0/24",  "policy": "direct_first",  "stun": ["stun1.example.com:3478"],  "supernodes": [    {"id":"sn1","host":"1.2.3.4","port":7654,"priority":100},    {"id":"sn2","host":"5.6.7.8","port":7654,"priority":80}  ],  "cf_ws_relay": "wss://relay.example.com/v1/relay",  "config_version": 42}
+附录 B. 建议默认参数（第一版可调）
+参数
+默认值
+说明
+Device heartbeat
+10 s
+Controller 在线状态
+Peer keepalive
+15 s
+维持 NAT 映射，实际按网络优化
+SN health interval
+5 s
+节点健康
+SN offline threshold
+3 failures
+连续失败
+Circuit open cooldown
+30 s
+进入 HALF_OPEN 前等待
+Half-open probes
+3
+连续成功关闭熔断
+Path switch min interval
+15 s
+防抖
+P2P preemption stable
+10 s
+P2P 回切前稳定时间
+Health critical threshold
+<40 for 3 s
+触发故障切换参考
+Invite default expiry
+24 h
+管理员可改
+Password max attempts
+5
+随后指数退避
+Metrics raw retention
+7 days
+后续做聚合长期保留
+
+附录 C. 技术参考资料（开发前请复核最新版本）
+[R1] Cloudflare Tunnel Overviewhttps://developers.cloudflare.com/tunnel/Tunnel 由 cloudflared 建立 outbound-only 连接；源站无需公网 IP。
+[R2] Cloudflare One - Private networkshttps://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/private-net/私网路由可暴露 HTTP 与非 HTTP 资源；终端需连接 Cloudflare 并加入组织。
+[R3] Cloudflare One - Connect with cloudflaredhttps://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/private-net/cloudflared/终端通过 Cloudflare One Client/WARP 访问 Tunnel 后的私网资源。
+[R4] Cloudflare Zero Trust Pricinghttps://www.cloudflare.com/plans/zero-trust-services/截至 2026-08：Free 计划面向 50 用户以内团队/PoC。
+[R5] ntop/n2n READMEhttps://github.com/ntop/n2nN2N 优先尝试 UDP P2P，失败时由 supernode relay。
+[R6] n2n Management APIhttps://github.com/ntop/n2n/blob/dev/doc/ManagementAPI.mdedge/supernode 提供管理接口；默认 UDP 5644/5645，支持 JSON。
+[R7] n2n edge manualhttps://github.com/ntop/n2n/blob/dev/edge.8edge 可配置多个 supernode。
+[R8] n2n Advanced/Federationhttps://github.com/ntop/n2n/blob/dev/doc/Advanced.md多个 supernode 可组成 Federation 提升韧性。
+[R9] ICE RFC 8445https://www.rfc-editor.org/rfc/rfc8445DirectLink Candidate/Connectivity Check 的协议参考。
+[R10] STUN RFC 8489https://www.rfc-editor.org/rfc/rfc8489NAT 映射发现与 keepalive 参考。
+结语
+本项目第一版的核心不是堆叠功能，而是把复杂网络能力封装成简单可靠的用户体验：创建者只需要“IP + 可选密码 + 连接”，成员只需要“导入 + 密码（如有）+ 连接”。底层通过 DirectLink、N2N、Supernode Pool、Cloudflare Relay 与熔断器共同保证连接成功率和故障恢复能力。开发时优先保证模块解耦、可观测、可回退，再逐步增加高级策略和 Cloudflare 私网实验能力。
