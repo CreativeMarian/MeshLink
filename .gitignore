@@ -1,26 +1,89 @@
-# Build
-target/
-dist/
+# ======================
+# Rust
+# ======================
 
-# Binary
+target/
+**/target/
+
+# Cargo backup
+*.rs.bk
+
+
+# ======================
+# Node / Tauri
+# ======================
+
+node_modules/
+dist/
+build/
+
+
+# ======================
+# Windows build files
+# ======================
+
 *.exe
 *.dll
-*.zip
+*.pdb
+*.lib
+*.obj
 
-# Runtime
-runtime/
 
+# ======================
 # Database
+# ======================
+
 *.db
 *.db-shm
 *.db-wal
 
-# Test
-exchange-test/
-*.txt
 
+# ======================
+# Runtime
+# ======================
+
+runtime/
+*.pid
+
+
+# ======================
 # Logs
+# ======================
+
 *.log
 
-# Secrets
+
+# ======================
+# Temporary test files
+# ======================
+
+exchange-test/
+tmp/
+temp/
+
+.cargo-check-output.txt
+.workspace-test.txt
+.doc_extract.txt
+
+
+# ======================
+# IDE
+# ======================
+
+.vscode/
+.idea/
+
+
+# ======================
+# Environment
+# ======================
+
 .env
+
+
+# ======================
+# OS
+# ======================
+
+Thumbs.db
+.DS_Store
