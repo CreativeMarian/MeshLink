@@ -1,89 +1,218 @@
-# ======================
+# =========================================
+# MeshLink Project .gitignore
+# Rust + Go + Tauri + Windows
+# =========================================
+
+
+# =========================
 # Rust
-# ======================
+# =========================
 
+# Rust build output
 target/
-**/target/
 
-# Cargo backup
+# Cargo generated files
+Cargo.lock.tmp
+
+# Rust backup
 *.rs.bk
 
 
-# ======================
-# Node / Tauri
-# ======================
+# =========================
+# Go
+# =========================
 
+# Go build output
+*.exe
+*.out
+
+# Go test cache
+*.test
+
+# Go coverage
+coverage.out
+cover.out
+
+
+# =========================
+# Tauri / Frontend
+# =========================
+
+# Node dependencies
 node_modules/
+
+# Frontend build
 dist/
 build/
+out/
+
+# Vite cache
+.vite/
+
+# Tauri build
+src-tauri/target/
 
 
-# ======================
-# Windows build files
-# ======================
+# =========================
+# Windows
+# =========================
 
+# Executables
 *.exe
+
+# Dynamic libraries
 *.dll
+
+# Windows debug symbols
 *.pdb
-*.lib
-*.obj
+
+# Installer output
+*.msi
+
+# Temporary Windows files
+Thumbs.db
+Desktop.ini
 
 
-# ======================
+# =========================
+# Runtime files
+# =========================
+
+runtime/
+
+tmp/
+
+temp/
+
+*.pid
+
+*.lock
+
+
+# =========================
 # Database
-# ======================
+# =========================
 
+# SQLite
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite3
 
 
-# ======================
-# Runtime
-# ======================
-
-runtime/
-*.pid
-
-
-# ======================
+# =========================
 # Logs
-# ======================
+# =========================
 
 *.log
 
+logs/
 
-# ======================
-# Temporary test files
-# ======================
+*.trace
+
+
+# =========================
+# Test output
+# =========================
+
+test-output/
+
+tests/output/
 
 exchange-test/
-tmp/
-temp/
 
-.cargo-check-output.txt
-.workspace-test.txt
-.doc_extract.txt
+*_output.txt
 
+out-*.txt
 
-# ======================
-# IDE
-# ======================
-
-.vscode/
-.idea/
+err-*.txt
 
 
-# ======================
+# =========================
 # Environment
-# ======================
+# =========================
 
 .env
 
+.env.*
 
-# ======================
+!.env.example
+
+
+# =========================
+# IDE
+# =========================
+
+.vscode/
+
+.idea/
+
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+
+# =========================
 # OS
-# ======================
+# =========================
 
-Thumbs.db
 .DS_Store
+
+
+# =========================
+# AI temporary files
+# =========================
+
+.ai/
+
+.chatgpt/
+
+.temp/
+
+*.tmp
+
+*.bak
+
+
+# =========================
+# Local documents
+# =========================
+
+# Local reports
+local-reports/
+
+# Private notes
+private/
+
+
+# =========================
+# MeshLink specific
+# =========================
+
+# Runtime identity cache
+runtime_token.json
+active_session.json
+quick_code.json
+temporary_candidates.json
+
+# Local controller database
+controller.db
+
+# Local generated binaries
+MeshLink.exe
+mesh-agent.exe
+controller.exe
+n2n-supernode.exe
+
+
+# =========================
+# Keep important third_party
+# =========================
+
+# Ignore downloaded binaries only
+third_party/**/bin/*.exe
+
+# Keep wintun.dll if required by runtime
+# third_party/wintun/bin/**/*.dll
