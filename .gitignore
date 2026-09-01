@@ -1,5 +1,5 @@
-# =========================================
-# MeshLink Project .gitignore
+﻿# =========================================
+# MeshLink .gitignore
 # Rust + Go + Tauri + Windows
 # =========================================
 
@@ -8,13 +8,9 @@
 # Rust
 # =========================
 
-# Rust build output
 target/
+**/target/
 
-# Cargo generated files
-Cargo.lock.tmp
-
-# Rust backup
 *.rs.bk
 
 
@@ -22,56 +18,36 @@ Cargo.lock.tmp
 # Go
 # =========================
 
-# Go build output
 *.exe
+*.test
 *.out
 
-# Go test cache
-*.test
-
-# Go coverage
 coverage.out
-cover.out
 
 
 # =========================
 # Tauri / Frontend
 # =========================
 
-# Node dependencies
 node_modules/
 
-# Frontend build
 dist/
-build/
-out/
 
-# Vite cache
+build/
+
 .vite/
 
-# Tauri build
-src-tauri/target/
+out/
 
 
 # =========================
-# Windows
+# Windows build files
 # =========================
 
-# Executables
 *.exe
-
-# Dynamic libraries
 *.dll
-
-# Windows debug symbols
 *.pdb
-
-# Installer output
 *.msi
-
-# Temporary Windows files
-Thumbs.db
-Desktop.ini
 
 
 # =========================
@@ -93,10 +69,10 @@ temp/
 # Database
 # =========================
 
-# SQLite
 *.db
 *.db-shm
 *.db-wal
+
 *.sqlite
 *.sqlite3
 
@@ -109,20 +85,14 @@ temp/
 
 logs/
 
-*.trace
-
 
 # =========================
-# Test output
+# Test generated files
 # =========================
-
-test-output/
-
-tests/output/
 
 exchange-test/
 
-*_output.txt
+test-output/
 
 out-*.txt
 
@@ -130,14 +100,20 @@ err-*.txt
 
 
 # =========================
+# Local generated reports
+# =========================
+
+.cargo-check-output.txt
+.doc_extract.txt
+.workspace-test.txt
+
+
+# =========================
 # Environment
 # =========================
 
 .env
-
 .env.*
-
-!.env.example
 
 
 # =========================
@@ -150,13 +126,15 @@ err-*.txt
 
 *.suo
 *.user
-*.userosscache
-*.sln.docstates
 
 
 # =========================
 # OS
 # =========================
+
+Thumbs.db
+
+Desktop.ini
 
 .DS_Store
 
@@ -169,50 +147,34 @@ err-*.txt
 
 .chatgpt/
 
-.temp/
-
 *.tmp
 
 *.bak
 
 
 # =========================
-# Local documents
+# MeshLink runtime generated
 # =========================
 
-# Local reports
-local-reports/
-
-# Private notes
-private/
-
-
-# =========================
-# MeshLink specific
-# =========================
-
-# Runtime identity cache
 runtime_token.json
+
 active_session.json
+
 quick_code.json
+
 temporary_candidates.json
 
-# Local controller database
+
+# =========================
+# Local controller files
+# =========================
+
 controller.db
 
-# Local generated binaries
-MeshLink.exe
-mesh-agent.exe
-controller.exe
-n2n-supernode.exe
-
 
 # =========================
-# Keep important third_party
+# Keep source
 # =========================
 
-# Ignore downloaded binaries only
-third_party/**/bin/*.exe
+!docs/**/*.md
 
-# Keep wintun.dll if required by runtime
-# third_party/wintun/bin/**/*.dll
