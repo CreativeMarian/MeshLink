@@ -54,6 +54,14 @@ v0.1.0
     创建页显示连接服务器（不显示本机局域网地址）；诊断中心三层（健康/详情/日志查看）；
     logs/ 六类日志（app/agent/connection/controller/network/error）；启动失败自动恢复最多 3 次。
 
+[x] mesh-agent 启动风暴修复（单例生命周期 + 握手等待 + 真实错误原因）：
+    新增 AgentLifecycle 单例状态机（Stopped/Starting/Running/Failed）；统一入口
+    ensure_agent_running()（首页/设置/诊断/心跳全部走同一入口），Starting 禁止重复 spawn；
+    spawn 后必须等待 Named Pipe 握手（最多 5s）才认为启动成功；启动失败显示真实原因
+    （进程退出码 + agent.log 尾部）；自动重试节流 5s；文案用户化
+    （正在准备连接... / 连接服务启动失败 [自动重试] [查看诊断]）。
+    实证：25s 观察只有 1 个 mesh-agent 进程、app.log 仅 1 条「启动 mesh-agent」；关闭后 agent 清理干净。
+
 
 ## Current Development
 
@@ -77,4 +85,4 @@ M4 Productization
 
 ## Last Update
 
-2026-09-01
+2026-09-02

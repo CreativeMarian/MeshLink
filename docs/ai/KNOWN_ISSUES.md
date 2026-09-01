@@ -13,6 +13,21 @@
 - Fast reconnect optimization
 
 
+## mesh-agent 启动风暴修复（2026-09-02）
+
+- **启动风暴根因已修**：`ensure_agent_running` 单例生命周期（Stopped/Starting/Running/
+  Failed）+ Named Pipe 握手等待（最多 5s）+ 失败真实原因（进程退出码 + agent.log 尾部）
+  + 自动重试 5s 节流。实证：25s 观察只有 1 个 mesh-agent、app.log 仅 1 条启动记录。
+- **本机 config.json 旧 LAN 测试残留已清理**：`mode=local` + `192.168.10.147:18080`
+  会覆盖默认公网 Controller（第 2 优先级=用户保存配置）导致正式版连本机地址失败；
+  已重置为 `{}` 恢复默认公网 `https://controller.bpbpanel.cc.cd`，备份
+  `%LOCALAPPDATA%\MeshLink\ui\config.json.bak-test-residue`。若其他机器也出现过
+  「启动日志显示 192.168.x.x」，检查该配置是否残留。
+- 虚拟机任务管理器验证方法：打开 MeshLink 后应只有 **1 个 mesh-agent.exe**（修复前是
+  十几个/几十个）；关闭 MeshLink 后 mesh-agent.exe 应消失为 0。
+
+
+
 ## 客户端正式版架构 + 公网 Controller（2026-09-01）
 
 - **正式版默认公网 Controller**：`https://controller.bpbpanel.cc.cd`（用户实测 curl 返回

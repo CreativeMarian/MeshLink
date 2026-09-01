@@ -13,7 +13,7 @@ use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::supervisor::{ProcessSupervisor, RuntimeDir};
@@ -35,6 +35,19 @@ enum IpcJob {
     },
 }
 
+/// mesh-agent 生命周期单例状态（启动风暴修复）。
+/// - Stopped：尚未启动 / 已停止；
+/// - Starting：正在启动（等待 pipe 握手中）——**禁止再次 spawn**；
+/// - Running：已连接（IPC 线程存活）；
+/// - Failed：启动失败（心跳/页面可再次尝试 ensure）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AgentLifecycle {
+    Stopped,
+    Starting,
+    Running,
+    Failed,
+}
+
 /// Tauri managed state。
 pub struct IpcState {
     job_tx: Mutex<Option<Sender<IpcJob>>>,
@@ -48,6 +61,8 @@ pub struct IpcState {
     residue_checked: AtomicBool,
     /// M1-1.5：supervisor（mesh-agent / DEV controller / DEV supernode 的所有权管理）。
     supervisor: ProcessSupervisor,
+    /// 启动风暴修复：mesh-agent 生命周期单例锁（Starting 禁止重复 spawn）。
+    agent_state: Mutex<AgentLifecycle>,
 }
 
 impl IpcState {
@@ -61,6 +76,7 @@ impl IpcState {
             next_id: AtomicU64::new(1),
             residue_checked: AtomicBool::new(false),
             supervisor: ProcessSupervisor::new(),
+            agent_state: Mutex::new(AgentLifecycle::Stopped),
         }
     }
 }
@@ -99,18 +115,73 @@ impl IpcReply {
 // Tauri 命令（同步：跑在阻塞线程池，不占 UI 主线程）
 // ---------------------------------------------------------------------------
 
-/// 启动时连接 Agent：先探测已有管道（服务已运行形态），失败则拉起 mesh-agent.exe。
-/// M1-1.5：首次连接前检测并清理 runtime 残留。
-/// 综合修复 P0-1/P0-3：正式版本（无 `--local-controller`）**绝不自动拉起 controller.exe**——
-/// Controller 是服务端组件（公网 Controller），不是用户电脑组件；MeshLink 只负责自动拉起
-/// mesh-agent.exe 并连接生效 Controller。仅开发模式 `--local-controller` 才允许拉起本机
-/// controller（127.0.0.1:18080）用于单机/局域网调试。
+/// 兼容别名：`agent_connect` 与 `ensure_agent_running` 等价（均单例，防启动风暴）。
 #[tauri::command]
 pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcReply, String> {
-    if state.connected.load(Ordering::Acquire) {
-        return send_status(&state);
-    }
+    ensure_agent_running(app, state)
+}
 
+/// **统一入口**：确保 mesh-agent 正在运行并已握手（启动风暴修复）。
+///
+/// 首页加载 / 设置页 / 诊断页 / 心跳检测**全部**调用本命令，禁止各自 spawn。
+/// 单例规则：
+/// - `Running`（已连接）→ 直接返回当前状态；
+/// - `Starting`（有调用者正在启动中）→ 返回「正在准备连接...」，**不重复 spawn**；
+/// - `Stopped` / `Failed` → 本调用者承担启动（设 Starting → 等待 pipe 握手 → 置 Running/Failed）。
+#[tauri::command]
+pub fn ensure_agent_running(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcReply, String> {
+    // 已连接：直接返回快照（并回写 Running）。
+    if state.connected.load(Ordering::Acquire) {
+        *state.agent_state.lock().unwrap() = AgentLifecycle::Running;
+        return send_status(state.inner());
+    }
+    // 单例检查：Starting 时其他调用者立即返回，不重复启动。
+    {
+        let mut st = state.agent_state.lock().unwrap();
+        match lifecycle_can_start(*st) {
+            LifecycleDecision::AlreadyRunning => return send_status(state.inner()), // 竞态兜底
+            LifecycleDecision::AlreadyStarting => {
+                return Ok(IpcReply::ok(serde_json::json!({
+                    "state": "STARTING",
+                    "user_facing": "正在准备连接...",
+                })));
+            }
+            LifecycleDecision::Proceed => {
+                *st = AgentLifecycle::Starting;
+            }
+        }
+    }
+    // 本调用者负责真正启动（可能耗时数秒；其他并发调用者见 Starting 已返回）。
+    let result = do_agent_connect(&app, &state);
+    *state.agent_state.lock().unwrap() = if result.is_ok() {
+        AgentLifecycle::Running
+    } else {
+        AgentLifecycle::Failed
+    };
+    result
+}
+
+/// 单例启动决策（启动风暴修复核心规则，独立成函数便于单测）：
+/// - `Running` → 已运行，不启动；
+/// - `Starting` → 已有调用者正在启动，**禁止再次 spawn**；
+/// - `Stopped` / `Failed` → 允许本调用者进入启动流程。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LifecycleDecision {
+    AlreadyRunning,
+    AlreadyStarting,
+    Proceed,
+}
+
+fn lifecycle_can_start(state: AgentLifecycle) -> LifecycleDecision {
+    match state {
+        AgentLifecycle::Running => LifecycleDecision::AlreadyRunning,
+        AgentLifecycle::Starting => LifecycleDecision::AlreadyStarting,
+        AgentLifecycle::Stopped | AgentLifecycle::Failed => LifecycleDecision::Proceed,
+    }
+}
+
+/// 真正启动 mesh-agent 并等待握手（最多 5s）：探测/拉起/连接/读状态。
+fn do_agent_connect(app: &AppHandle, state: &IpcState) -> Result<IpcReply, String> {
     // 异常退出残留检测（仅一次）：终止上次 MeshLink 遗留的 agent/controller + 清空 runtime。
     if !state.residue_checked.swap(true, Ordering::AcqRel) {
         let killed = state.supervisor.detect_and_clean_residue();
@@ -135,11 +206,12 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
     let mode = controller_mode();
     let manage_controller = local_controller_enabled() && (mode == "local" || mode == "lan");
     if manage_controller && !controller_healthy(&controller_url) {
-        spawn_controller(&state, &mode)?;
+        spawn_controller(state, &mode)?;
     }
 
-    // 自动拉起 mesh-agent（P0-3）：连接失败自动重试最多 3 次（P2-2 自动恢复）。
-    // 每次重试先探测管道（服务可能已被上次 MeshLink 拉起），失败再 spawn。
+    // 自动拉起 mesh-agent（单例，由 ensure_agent_running 保证同时只有一个调用者走到这里）。
+    // 每次重试先探测管道（服务可能已被上次 MeshLink 拉起），失败再 spawn；spawn 后
+    // **必须等待 pipe 握手（最多 5s）**，禁止 spawn 后立即认为启动成功。
     let pipe = std::env::var("MESHLINK_PIPE_NAME").unwrap_or_else(|_| DEFAULT_PIPE_NAME.into());
     let mut last_err: String = "未知错误".into();
     let mut client = None;
@@ -154,18 +226,27 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
                 match spawn_agent_process(&pipe, &state.supervisor.runtime, &controller_url) {
                     Ok(child) => {
                         *state.agent.lock().unwrap() = Some(child);
-                        match PipeClient::connect(&pipe, Duration::from_secs(15)) {
+                        // 等待 pipe 握手（最多 5s）。
+                        match wait_pipe_ready(&pipe, Duration::from_secs(5)) {
                             Ok(c) => {
                                 client = Some(c);
                                 break;
                             }
-                            Err(e) => {
-                                // spawn 成功但管道未就绪：回收本进程拉起的 agent，下一轮重试。
+                            Err(wait_err) => {
+                                // 启动未就绪：收集真实原因（进程退出码 + agent.log 尾部）。
+                                let reason = {
+                                    let mut guard = state.agent.lock().unwrap();
+                                    match guard.as_mut() {
+                                        Some(ch) => child_exit_reason(ch, &wait_err),
+                                        None => wait_err.clone(),
+                                    }
+                                };
+                                // 回收本进程拉起的 agent，下一轮重试。
                                 if let Some(mut ch) = state.agent.lock().unwrap().take() {
                                     let _ = ch.kill();
                                     let _ = ch.wait();
                                 }
-                                last_err = format!("后台服务未就绪：{e}");
+                                last_err = reason;
                             }
                         }
                     }
@@ -181,14 +262,54 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
     }
     let client = client.ok_or_else(|| format!("{last_err}（已重试 3 次）"))?;
 
-    start_ipc_loop(state.inner(), app, client);
+    start_ipc_loop(state, app.clone(), client);
     // M1-2：仅开发模式（本机/局域网 controller）拉起本机 n2n-supernode 并注册到
     // Controller Supernode Registry（Agent 持有 credential；UI 不触碰密钥）。
     // 正式版连公网 Controller：Supernode 池由 Controller Registry 下发，不拉起本机 SN。
     if manage_controller {
-        let _ = spawn_dev_supernode_and_register(state.inner());
+        let _ = spawn_dev_supernode_and_register(state);
     }
-    send_status(&state)
+    send_status(state)
+}
+
+/// 等待 Named Pipe 就绪（启动握手：spawn 后轮询连接，最多 `timeout`）。
+fn wait_pipe_ready(pipe: &str, timeout: Duration) -> Result<PipeClient, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match PipeClient::connect(pipe, Duration::from_millis(200)) {
+            Ok(c) => return Ok(c),
+            Err(_) => {
+                if Instant::now() >= deadline {
+                    return Err(format!("等待后台服务就绪超时（{timeout:?}）"));
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        }
+    }
+}
+
+/// 启动失败的真实原因：若子进程已退出，取退出码 + agent.log 尾部；否则返回等待超时描述。
+fn child_exit_reason(child: &mut Child, wait_err: &str) -> String {
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            let code = status.code().unwrap_or(-1);
+            let tail = tail_log("agent.log", 6);
+            format!("后台服务启动后退出 code={code} 日志: {tail}")
+        }
+        _ => wait_err.to_string(),
+    }
+}
+
+/// 读取日志文件最后 `lines` 行（失败原因展示用）。
+fn tail_log(name: &str, lines: usize) -> String {
+    let path = logs_dir().join(name);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return "(无日志)".into();
+    };
+    let v: Vec<&str> = text.lines().rev().take(lines).collect();
+    let mut out = v.clone();
+    out.reverse();
+    out.join("\n")
 }
 
 /// 开发模式（--local-controller）：允许 MeshLink 拉起本机 controller.exe（127.0.0.1:18080）。
@@ -396,6 +517,24 @@ mod tests {
     #[test]
     fn controller_listen_spec_port_is_canonical() {
         assert_eq!(DEFAULT_CONTROLLER_PORT, "18080");
+    }
+
+    #[test]
+    fn agent_lifecycle_singleton_starts_only_once() {
+        // 启动风暴修复：Starting 状态禁止再次启动（并发调用者只允许一个进入启动流程）。
+        use super::*;
+        let mut s = AgentLifecycle::Stopped;
+        // 首个调用者：Proceed 并置 Starting。
+        assert_eq!(lifecycle_can_start(s), LifecycleDecision::Proceed);
+        s = AgentLifecycle::Starting;
+        // 并发调用者：AlreadyStarting，禁止重复 spawn。
+        assert_eq!(lifecycle_can_start(s), LifecycleDecision::AlreadyStarting);
+        // 启动成功 → Running：后续调用不启动。
+        s = AgentLifecycle::Running;
+        assert_eq!(lifecycle_can_start(s), LifecycleDecision::AlreadyRunning);
+        // 启动失败 → Failed：允许下次（心跳/页面）重新尝试。
+        s = AgentLifecycle::Failed;
+        assert_eq!(lifecycle_can_start(s), LifecycleDecision::Proceed);
     }
 }
 
@@ -796,7 +935,7 @@ pub fn shutdown(state: &IpcState) {
 // 内部
 // ---------------------------------------------------------------------------
 
-fn send_status(state: &State<'_, IpcState>) -> Result<IpcReply, String> {
+fn send_status(state: &IpcState) -> Result<IpcReply, String> {
     let tx = state.job_tx.lock().unwrap().clone();
     let Some(tx) = tx else {
         return Ok(IpcReply::err("AGENT_STOPPED", "后台服务未连接"));

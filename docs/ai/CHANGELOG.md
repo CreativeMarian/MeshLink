@@ -1,6 +1,40 @@
 # MeshLink Changelog
 
 
+## mesh-agent 启动风暴修复（2026-09-02）
+
+Fixed:
+
+- **mesh-agent 启动风暴根因**：`agent_connect` 是同步 Tauri command，首页加载 / 设置页 /
+  诊断页 / 心跳**并发**调用时无单例锁，每个调用者各自跑 3 次 spawn 循环 → 日志反复
+  「启动 mesh-agent」几十次；且 spawn 后等 15s 未就绪就 kill 重试，agent 启动慢时被反复
+  杀掉重启。
+- **单例生命周期**：新增 `AgentLifecycle`（Stopped/Starting/Running/Failed）状态机，
+  统一入口 `ensure_agent_running()`（首页/设置/诊断/心跳全部走它，`agent_connect` 变为
+  等价别名）。`Starting` 状态禁止再次 spawn（返回「正在准备连接...」）；并发调用者
+  直接返回，只有第一个进入真正启动流程。单测 `agent_lifecycle_singleton_starts_only_once`
+  覆盖 Stopped→Starting（禁止重复）→Running（不启动）/Failed（允许重启）。
+- **握手等待**：spawn 后必须等待 Named Pipe 就绪（`wait_pipe_ready`，轮询最多 5s）才认为
+  启动成功，禁止 spawn 后立即返回成功。
+- **失败显示真实原因**：启动未就绪时 `child_exit_reason` 收集进程退出码 + `agent.log`
+  尾部，替代笼统「后端服务启动失败」；诊断中心可据此定位。
+- **自动重试节流**：心跳/恢复共用 `autoRetryAgent()`（5s 节流），统一走
+  `ensure_agent_running` 单例入口。
+- **文案用户化**：「正在准备连接...」替代「正在连接服务...」；「连接服务启动失败
+  [自动重试] [查看诊断]」替代「后端服务启动失败」。
+- **实证验证**（本机真实 dist 二进制）：25s 观察始终只有 1 个 mesh-agent 进程、
+  app.log 仅 1 条「启动 mesh-agent」（修复前几十次）；关闭 MeshLink 后 agent 清理为 0。
+- 清理本机 `%LOCALAPPDATA%\MeshLink\ui\config.json` 中旧 LAN 测试残留
+  （`mode=local` + `192.168.10.147:18080`，会覆盖默认公网 Controller），恢复默认公网
+  `https://controller.bpbpanel.cc.cd`（备份为 `config.json.bak-test-residue`）。
+
+Added:
+
+- ipc.rs 单元测试 +1（agent_lifecycle_singleton_starts_only_once），meshlink-ui 单测 8→9。
+- 全部验证 PASS：meshlink-ui 9 单测、JS 三契约（47/39/recent）、workspace 全量、
+  release smoke 四文件 5 用例（binary/gui/lifecycle/two_machine）。
+
+
 ## 客户端正式版架构 + 公网 Controller（2026-09-01）
 
 Changed:

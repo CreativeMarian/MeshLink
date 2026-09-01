@@ -58,6 +58,7 @@ const S = {
   connState: "STARTING",
   connMeta: { server: "", latency: "" }, // 首页顶部：服务器 + 延迟
   reconnectTimer: null,
+  lastAutoRetry: 0,  // 启动风暴修复：自动重试节流（5s 内只调一次 ensure_agent_running）
 };
 
 /* ---------------- 工具 ---------------- */
@@ -545,19 +546,29 @@ function hostOf(url) {
   try { return new URL(url).host; } catch { return url || "--"; }
 }
 
-// 断开后自动重连（Agent 管道恢复时）：先清理残留会话 UI，再调 agent_connect。
+// 断开后自动重连（Agent 管道恢复时）：先清理残留会话 UI，再调统一入口
+// ensure_agent_running（单例：Starting 时不会重复启动，防启动风暴）。
 async function reconnectNow() {
   const b = $("btn-reconnect");
   if (b) b.disabled = true;
-  renderStatus({ state: "STARTING", user_facing: "正在连接服务..." });
+  renderStatus({ state: "STARTING", user_facing: "正在准备连接..." });
   try {
-    const r = await invoke("agent_connect");
+    const r = await invoke("ensure_agent_running");
     if (r && r.ok && r.data) {
-      renderStatus(r.data);
-      loadControllerStatus();
-      refreshFriends();
-      refreshRecent();
-      toast("已重新连接");
+      const snap = r.data;
+      if (snap.state === "STARTING") {
+        renderStatus({ state: "STARTING", user_facing: "正在准备连接..." });
+        showReconnect();
+      } else if (snap.state === "READY" || snap.state === "CONNECTED") {
+        hideReconnect();
+        renderStatus(snap);
+        loadControllerStatus();
+        refreshFriends();
+        refreshRecent();
+        toast("已重新连接");
+      } else {
+        showReconnect();
+      }
     } else {
       showReconnect();
     }
@@ -570,8 +581,38 @@ async function reconnectNow() {
   }
 }
 
+// 启动风暴修复：自动重试统一入口（心跳/恢复共用）。ensure_agent_running 单例——
+// Starting 返回"正在准备连接..."不重复 spawn；Failed 才会真正重启。节流 5s。
+async function autoRetryAgent() {
+  const now = Date.now();
+  if (now - (S.lastAutoRetry || 0) < 5000) return;
+  S.lastAutoRetry = now;
+  try {
+    const r = await invoke("ensure_agent_running");
+    if (r && r.ok && r.data) {
+      const snap = r.data;
+      if (snap.state === "STARTING") {
+        renderStatus({ state: "STARTING", user_facing: "正在准备连接..." });
+      } else if (snap.state === "READY" || snap.state === "CONNECTED") {
+        hideReconnect();
+        renderStatus(snap);
+        loadControllerStatus();
+        refreshFriends();
+        refreshRecent();
+      } else {
+        showReconnect();
+      }
+    } else {
+      showReconnect();
+    }
+  } catch (e) {
+    showReconnect();
+  }
+}
+
 // 心跳：定期探测 Agent 状态（P0-5）。GetStatus 失败 / AGENT_STOPPED → 显示断开 +
-// 自动重连。恢复（READY/CONNECTED）→ 清除断开态。同时刷新连接延迟。
+// 自动重连（经 ensure_agent_running 单例入口）。恢复（READY/CONNECTED）→ 清除断开态。
+// 同时刷新连接延迟。
 async function heartbeat() {
   let r = null;
   try {
@@ -592,10 +633,11 @@ async function heartbeat() {
       loadControllerStatus();
     }
   } else {
-    // GetStatus 失败 → Agent 管道断开 → 断开态 + 自动重连。
+    // GetStatus 失败 → Agent 管道断开 → 断开态 + 自动重试（单例 ensure_agent_running）。
     setConnState("DISCONNECTED");
     showReconnect();
-    renderStatus({ state: "FAILED", user_facing: "网络服务未启动" });
+    renderStatus({ state: "FAILED", user_facing: "连接服务启动失败" });
+    autoRetryAgent();
   }
 }
 
@@ -1109,7 +1151,7 @@ async function saveController() {
     // 持久化 UI 内存态 + 让 Agent 用新地址重连（若已在跑）。
     S.controllerUrl = (cfg && cfg.controller_url) || url;
     try { await send("SetControllerUrl", { url: S.controllerUrl }); } catch { /* Agent 未在跑，由重连处理 */ }
-    invoke("agent_connect").then(() => loadControllerStatus()).catch(() => {});
+    invoke("ensure_agent_running").then(() => loadControllerStatus()).catch(() => {});
     setTimeout(testController, 1500);
   } catch (e) {
     $("settings-error").textContent = "保存失败：" + (ERROR_TEXT[errorCode(e)] || formatError(e));
@@ -1293,8 +1335,16 @@ document.addEventListener("click", (e) => {
 
 async function boot() {
   try {
-    const r = await invoke("agent_connect");
-    if (r && r.ok && r.data) renderStatus(r.data);
+    const r = await invoke("ensure_agent_running");
+    if (r && r.ok && r.data) {
+      const snap = r.data;
+      if (snap.state === "STARTING") {
+        // 单例启动中（其他调用者已在进行）：显示"正在准备连接..."。
+        renderStatus({ state: "STARTING", user_facing: "正在准备连接..." });
+      } else {
+        renderStatus(snap);
+      }
+    }
     else if (r && !r.ok && r.error) {
       // 综合修复 P2-2：启动失败给出用户化提示 + 查看诊断。
       $("status-pill").className = "dot dot-red";

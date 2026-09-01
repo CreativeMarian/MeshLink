@@ -34,6 +34,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             ipc::agent_connect,
+            ipc::ensure_agent_running,
             ipc::ipc_request,
             ipc::load_ui_config,
             ipc::save_controller_url,
