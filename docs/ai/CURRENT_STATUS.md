@@ -34,6 +34,9 @@ v0.1.0
 
 [x] 双机部署用户体验优化（未连接 Controller 明确提示；设置页当前 Controller 地址；ADR-004）
 
+[x] 双机 Controller 生命周期设计（首次启动未配置不再默认连 127.0.0.1；设置页本机/已有地址二选一；
+    仅「本机 Controller」模式才自动拉起 controller.exe；双机联机必须选「已有 Controller 地址」共享同一 Controller）
+
 
 ## Current Development
 

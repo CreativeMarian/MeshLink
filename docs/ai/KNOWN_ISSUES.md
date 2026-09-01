@@ -72,8 +72,30 @@
   放行 RFC1918 私网 http（公网 http 仍拒绝），消除「后端放行但 UI 拒绝保存局域网地址」不一致。
 - 新增 `docs/adr/ADR-004-controller-topology.md`：单 Controller 共享架构、LAN 明文场景、
   未来公网规划（自签/私有 CA HTTPS、TLS 终结层 / Cloudflare Tunnel、多 Controller）。
-- 物理双机实机 UI 展示仍标 `PENDING_REAL_WORLD_VALIDATION`；JS 契约测试（ui_error_contract 40 项）
+- 物理双机实机 UI 展示仍标 `PENDING_REAL_WORLD_VALIDATION`；JS 契约测试（ui_error_contract 46 项）
   已覆盖文案与 URL 白名单，release_gui_smoke / release_two_machine_smoke 均 PASS。
+
+
+## 双机 Controller 生命周期设计（2026-09-01）
+
+- 根因收敛：修复 404 拓扑后仍残留「MeshLink.exe 无条件把无配置当成本机 127.0.0.1」的默认行为——
+  双机仍会各自拉起独立 Controller。现正式引入三态：`未配置` / `本机 Controller` / `已有 Controller 地址`。
+- 改动：
+  - MeshLink.exe 首次启动无任何 Controller 配置时**不再静默默认连 127.0.0.1**，不拉起
+    controller.exe / mesh-agent.exe；首页显示「未配置 Controller」+「去配置」按钮。
+  - 设置页新增「Controller 模式」二选一：本机 Controller（MeshLink 自动拉起 controller.exe，
+    地址固定 127.0.0.1:18080）/ 已有 Controller 地址（绝不自动拉起本机；双机联机必须此项，
+    双方指向同一共享 Controller）。地址输入 + 测试连接 + 保存并应用。
+  - 环境变量 `MESHLINK_CONTROLLER_URL` = 显式既有地址（remote 语义，最高优先级，不自动拉起本机）。
+  - 配置存 `%LOCALAPPDATA%\MeshLink\ui\config.json`（controller_mode + controller_url）；旧配置
+    （仅 controller_url）兼容为 remote 语义。credential/私钥仍只归 Agent secure-store。
+  - 设置页实时显示当前生效 Controller 地址 / 状态 / 延迟 / 服务器 / 设备 ID；首页未连接时
+    横幅明确显示「未连接 Controller」+ 当前地址 + [重新连接]/[修改 Controller 地址]。
+- 验证：JS 契约测试新增 NOT_CONFIGURED 渲染（46 项全 PASS）与 Controller 模式切换；release_gui_smoke
+  PASS；MeshLink.exe 内嵌 app.js/HTML 经 brotli 反解确认含新模式字段。物理双机实机流程仍标
+  `PENDING_REAL_WORLD_VALIDATION`。
+- 注意：双机联机时**两台都不能选「使用本机 Controller」**（会各自拉起独立 Controller，码对不上）；
+  必须都选「已有 Controller 地址」指向同一共享 Controller（ADR-004 / dist README 双机联机章节）。
 
 
 ## Development Notes

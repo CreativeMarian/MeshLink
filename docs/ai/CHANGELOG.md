@@ -33,6 +33,26 @@ Added:
   overlay ping 64/512/1200/1400B）、force_directlink_success 保持 directlink。
 
 
+## 双机 Controller 生命周期设计（2026-09-01）
+
+Changed:
+
+- MeshLink.exe 首次启动无 Controller 配置时**不再静默默认连 127.0.0.1**：不拉起
+  controller.exe / mesh-agent.exe，首页显示「未配置 Controller」+「去配置」按钮。
+- 设置页新增「Controller 模式」二选一：
+  - 使用本机 Controller：MeshLink 自动拉起 controller.exe（地址固定 127.0.0.1:18080）；
+  - 使用已有 Controller 地址：绝不自动拉起本机 controller（双机联机必须此项，共享同一 Controller）。
+  支持地址输入 + 测试连接 + 保存并应用。
+- 环境变量 `MESHLINK_CONTROLLER_URL` = 显式既有地址（remote 语义，最高优先级，不自动拉起本机）。
+- 配置存 `%LOCALAPPDATA%\MeshLink\ui\config.json`（controller_mode + controller_url）；
+  旧配置（仅 controller_url）兼容为 remote 语义；credential/私钥仍只归 Agent secure-store。
+- 设置页实时显示当前生效 Controller 地址 / 状态 / 延迟 / 服务器 / 设备 ID；首页未连接横幅
+  明确显示「未连接 Controller」+ 当前地址 + [重新连接]/[修改 Controller 地址]。
+- Tauri 新增命令 `save_controller_config` / `get_controller_config`；
+  `effective_controller_url` 改为 Option 语义（None = 未配置）。
+- JS 契约测试：新增 NOT_CONFIGURED 渲染与 Controller 模式切换（ui_error_contract → 46 项）。
+
+
 ## Session 生命周期日志（2026-09-01）
 
 Fixed:

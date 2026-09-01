@@ -226,10 +226,19 @@ function renderStatus(snap) {
   const text = $("status-text");
   const state = snap && snap.state;
   // poll 兜底：已恢复即隐藏 Controller 不可达横幅。
-  if (state === "READY" || state === "CONNECTED") hideControllerUnreachable();
+  if (state === "READY" || state === "CONNECTED") {
+    hideControllerUnreachable();
+    $("home-noconfig").classList.add("hidden");
+  }
   let cls = "dot-gray", label = "未知";
   if (state === "READY") { cls = "dot-green"; label = "已就绪"; }
   else if (state === "CONNECTED") { cls = "dot-green"; label = "已连接"; }
+  else if (state === "NOT_CONFIGURED") {
+    cls = "dot-gray";
+    label = "未配置 Controller";
+    // 首页明确提示去配置（双机架构调整：首次启动无配置时不默认 127.0.0.1）。
+    $("home-noconfig").classList.remove("hidden");
+  }
   else if (state === "FAILED" || state === "STOPPED") { cls = "dot-red"; }
   else if (state && state !== "STARTING") { cls = "dot-blue"; }
   label = (snap && snap.user_facing) || label;
@@ -461,7 +470,7 @@ function hideControllerUnreachable() {
 
 async function retryController() {
   const url = (S.controllerUrl || "").trim();
-  if (!url) { show("settings"); return; }
+  if (!url) { show("settings"); syncControllerModeUI(); return; }
   try {
     await send("SetControllerUrl", { url });
     renderStatus({ state: "STARTING", user_facing: "正在连接服务..." });
@@ -891,7 +900,30 @@ async function refreshDevices() {
   }
 }
 
-/* ---------------- 设置：Controller 地址（M1-1） ---------------- */
+/* ---------------- 设置：Controller 模式与地址（双机架构调整） ---------------- */
+
+const DEFAULT_CONTROLLER_URL = "http://127.0.0.1:18080";
+
+function currentControllerMode() {
+  return $("mode-local").checked ? "local" : "remote";
+}
+
+function applyControllerModeUI(mode, url) {
+  $("mode-local").checked = mode === "local";
+  $("mode-remote").checked = mode !== "local";
+  syncControllerModeUI();
+  const u = (url || "").trim();
+  $("controller-url").value = u;
+  if (mode !== "local" && !u) $("controller-url").value = "";
+}
+
+function syncControllerModeUI() {
+  const local = currentControllerMode() === "local";
+  $("ctl-url-row").style.display = local ? "none" : "flex";
+  $("ctl-mode-hint").textContent = local
+    ? "MeshLink 将自动启动本机 controller.exe（" + DEFAULT_CONTROLLER_URL + "）。双机共享请选择「已有 Controller 地址」。"
+    : "使用已有 Controller（如局域网共享或公网 HTTPS）。MeshLink 不会自动启动本机 controller.exe。";
+}
 
 function isProdHttpRejected(url) {
   let u;
@@ -917,9 +949,11 @@ function isPrivateHost(host) {
 }
 
 async function testController() {
-  const url = ($("controller-url").value || "").trim();
+  const mode = currentControllerMode();
+  let url = ($("controller-url").value || "").trim();
+  if (mode === "local") url = DEFAULT_CONTROLLER_URL;
   $("settings-error").textContent = "";
-  if (isProdHttpRejected(url)) {
+  if (mode === "remote" && isProdHttpRejected(url)) {
     $("settings-error").textContent = "生产 Controller 必须使用 HTTPS（开发机可用 http://localhost/ 或 http://127.0.0.1/）。";
     return;
   }
@@ -932,7 +966,7 @@ async function testController() {
     $("ctl-latency").textContent = c ? data.latency_ms + " ms" : "--";
     $("ctl-server").textContent = data.url ? new URL(data.url).host : "--";
     $("ctl-device").textContent = data.device_id || "--";
-    if (c) $("settings-error").textContent = "连接正常。";
+    if (c) $("settings-error").textContent = "连接正常（" + data.url + "）。";
     else $("settings-error").textContent = "无法连接 Controller，请检查地址与网络。";
   } catch (e) {
     $("settings-error").textContent = "测试失败：" + (ERROR_TEXT[errorCode(e)] || formatError(e));
@@ -940,18 +974,25 @@ async function testController() {
 }
 
 async function saveController() {
-  const url = ($("controller-url").value || "").trim();
+  const mode = currentControllerMode();
+  let url = ($("controller-url").value || "").trim();
   $("settings-error").textContent = "";
-  if (!url) { $("settings-error").textContent = "请输入 Controller 地址。"; return; }
-  if (isProdHttpRejected(url)) {
-    $("settings-error").textContent = "生产 Controller 必须使用 HTTPS（开发机可用 http://localhost/ 或 http://127.0.0.1/）。";
-    return;
+  if (mode === "remote") {
+    if (!url) { $("settings-error").textContent = "请输入已有 Controller 地址。"; return; }
+    if (isProdHttpRejected(url)) {
+      $("settings-error").textContent = "生产 Controller 必须使用 HTTPS（开发机可用 http://localhost/ 或 http://127.0.0.1/）。";
+      return;
+    }
+  } else {
+    url = DEFAULT_CONTROLLER_URL;
   }
   try {
-    await send("SetControllerUrl", { url });
-    $("settings-error").textContent = "已保存，正在重连...";
-    // 持久化到 UI 配置（下次启动默认值）。
-    invoke("save_controller_url", { url });
+    const cfg = await invoke("save_controller_config", { mode, url });
+    $("settings-error").textContent = "已保存，正在应用...";
+    // 持久化 UI 内存态 + 让 Agent 用新地址重连（若已在跑）。
+    S.controllerUrl = (cfg && cfg.controller_url) || url;
+    try { await send("SetControllerUrl", { url: S.controllerUrl }); } catch { /* Agent 未在跑，由重连处理 */ }
+    invoke("agent_connect").then(() => loadControllerStatus()).catch(() => {});
     setTimeout(testController, 1500);
   } catch (e) {
     $("settings-error").textContent = "保存失败：" + (ERROR_TEXT[errorCode(e)] || formatError(e));
@@ -1098,16 +1139,13 @@ async function boot() {
     }
   });
   startStatusPoll();
-  // 读取已保存的 Controller 配置回填设置页；无保存值用后端单一默认（不再 JS 硬编码）。
+  // 读取已保存的 Controller 配置回填设置页（含模式）；无保存值保持未配置态。
   try {
-    const cfg = await invoke("load_ui_config");
-    if (cfg && cfg.controller_url) {
-      S.controllerUrl = cfg.controller_url;
-      $("controller-url").value = cfg.controller_url;
-    } else {
-      const def = await invoke("get_controller_default");
-      S.controllerUrl = def;
-      $("controller-url").value = def;
+    const cfg = await invoke("get_controller_config");
+    if (cfg) {
+      S.controllerUrl = cfg.effective_url || "";
+      if (cfg.mode) applyControllerModeUI(cfg.mode, cfg.controller_url || cfg.effective_url || "");
+      else applyControllerModeUI("remote", cfg.controller_url || "");
     }
   } catch { /* 默认值由 spawn_agent_process 兜底 */ }
   // 首次启动即加载「当前 Controller 地址 / 连接状态」（无需先点进设置页）。
@@ -1124,7 +1162,7 @@ document.querySelectorAll(".nav-btn").forEach((b) => {
     show(v);
     if (v === "friends") refreshFriends();
     if (v === "devices") refreshDevices();
-    if (v === "settings") { loadControllerStatus(); }
+    if (v === "settings") { syncControllerModeUI(); loadControllerStatus(); }
     if (v === "home") refreshRecent();
   });
 });
@@ -1146,6 +1184,9 @@ $("btn-invite").addEventListener("click", openInviteModal);
 $("btn-invite-2").addEventListener("click", openInviteModal);
 $("btn-ctl-retry").addEventListener("click", retryController);
 $("btn-ctl-change").addEventListener("click", () => { show("settings"); const el = $("controller-url"); el.focus(); el.select(); });
+$("btn-noconfig-settings").addEventListener("click", () => { show("settings"); const el = $("controller-url"); el.focus(); el.select(); });
+$("mode-local").addEventListener("change", syncControllerModeUI);
+$("mode-remote").addEventListener("change", syncControllerModeUI);
 $("btn-copy-code").addEventListener("click", copyQuickCode);
 $("btn-join-connect").addEventListener("click", startJoin);
 $("btn-join-back").addEventListener("click", () => { hideError($("join-error")); show("home"); });

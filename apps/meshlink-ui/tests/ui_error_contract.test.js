@@ -212,6 +212,35 @@ async function withInvoke(rejectValue) {
   check("READY 正常显示『已就绪』", statusText() === "已就绪", statusText());
   S.ctlErr = false;
 
+  /* ---------------- 7) NOT_CONFIGURED：首次启动未配置 Controller ---------------- */
+  console.log("[7] renderStatus：未配置 Controller 状态与首页提示");
+  S.ctlErr = false;
+  api.renderStatus({ state: "NOT_CONFIGURED", user_facing: "未配置 Controller" });
+  check("NOT_CONFIGURED → 显示『未配置 Controller』", statusText() === "未配置 Controller", statusText());
+  const noconfig = els["home-noconfig"] || makeEl("home-noconfig");
+  // renderStatus 内对 READY/CONNECTED 会隐藏，NOT_CONFIGURED 分支要显式显示。
+  const noconfigAfter = els["home-noconfig"];
+  check("首页未配置提示已显示", !!(noconfigAfter && !noconfigAfter.classList.contains("hidden")));
+  // 连接后应隐藏未配置提示。
+  api.renderStatus({ state: "READY", user_facing: "已就绪", device_id: "dev-x" });
+  const nc2 = els["home-noconfig"];
+  check("READY 后未配置提示隐藏", !!(nc2 && nc2.classList.contains("hidden")));
+
+  /* ---------------- 8) Controller 模式 UI ---------------- */
+  console.log("[8] Controller 模式：local / remote 切换");
+  // 默认 remote 模式（未配置）。
+  const modeLocal = els["mode-local"] || makeEl("mode-local");
+  const modeRemote = els["mode-remote"] || makeEl("mode-remote");
+  modeLocal.checked = false; modeRemote.checked = true;
+  api.syncControllerModeUI();
+  const urlRow = els["ctl-url-row"] || makeEl("ctl-url-row");
+  check("remote 模式显示地址输入框", urlRow.style.display !== "none");
+  modeLocal.checked = true; modeRemote.checked = false;
+  api.syncControllerModeUI();
+  check("local 模式隐藏地址输入框", urlRow.style.display === "none");
+  const hint = els["ctl-mode-hint"] || makeEl("ctl-mode-hint");
+  check("local 模式提示含本机地址", (hint.textContent || "").indexOf("127.0.0.1") !== -1);
+
   console.log("\nRESULT: " + pass + " passed, " + fail + " failed");
   if (fail > 0) process.exit(1);
   console.log("UI ERROR CONTRACT TESTS PASS");

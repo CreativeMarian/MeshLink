@@ -39,6 +39,14 @@
         <span id="status-pill" class="dot dot-gray"></span>
         <span id="status-text" class="status-text">正在连接服务...</span>
       </div>
+      <!-- 双机架构调整：首次启动无 Controller 配置时的明确提示 -->
+      <div id="home-noconfig" class="ctl-err hidden">
+        <div class="ctl-err-title">未配置 Controller</div>
+        <div class="ctl-err-addr">请选择「使用本机 Controller」或「使用已有 Controller 地址」。</div>
+        <div class="ctl-err-actions">
+          <button id="btn-noconfig-settings" class="btn btn-primary btn-sm">去配置</button>
+        </div>
+      </div>
       <div class="home-device-card" id="home-device-card" style="display:none">
         <span class="info-label">我的设备</span>
         <span class="mono" id="home-device"></span>
@@ -143,14 +151,20 @@
     <!-- ============ 设置 ============ -->
     <section id="view-settings" class="view">
       <p class="section-title">网络服务</p>
-      <div class="form-row">
+      <div class="radio-row">
+        <span class="info-label" style="flex:none">Controller 模式</span>
+        <label><input type="radio" name="ctl-mode" id="mode-local" value="local" /> 使用本机 Controller</label>
+        <label><input type="radio" name="ctl-mode" id="mode-remote" value="remote" /> 使用已有 Controller 地址</label>
+      </div>
+      <p id="ctl-mode-hint" class="muted" style="font-size:12px;margin:6px 0 0 0"></p>
+      <div class="form-row" id="ctl-url-row">
         <span class="info-label">Controller 地址</span>
         <input id="controller-url" class="text-input" placeholder="https://control.example.com/" autocomplete="off" />
       </div>
       <p id="settings-error" class="error-text muted"></p>
       <div class="action-row">
         <button id="btn-test-controller" class="btn btn-secondary">测试连接</button>
-        <button id="btn-save-controller" class="btn btn-primary">保存并重连</button>
+        <button id="btn-save-controller" class="btn btn-primary">保存并应用</button>
       </div>
       <div class="info-card" id="controller-status-card">
         <div class="info-row"><span class="info-label">Controller</span><span class="info-value" id="ctl-state">--</span></div>

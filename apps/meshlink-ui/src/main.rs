@@ -37,6 +37,8 @@ fn main() {
             ipc::ipc_request,
             ipc::load_ui_config,
             ipc::save_controller_url,
+            ipc::save_controller_config,
+            ipc::get_controller_config,
             ipc::get_controller_default,
         ])
         .build(tauri::generate_context!())

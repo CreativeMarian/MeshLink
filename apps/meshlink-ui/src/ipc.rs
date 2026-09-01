@@ -72,6 +72,10 @@ pub struct IpcReply {
 }
 
 impl IpcReply {
+    fn ok(data: serde_json::Value) -> Self {
+        Self { ok: true, data: Some(data), error: None }
+    }
+
     fn from_response(r: &Response) -> Self {
         Self { ok: r.ok, data: r.data.clone(), error: r.error.clone() }
     }
@@ -86,7 +90,11 @@ impl IpcReply {
 // ---------------------------------------------------------------------------
 
 /// 启动时连接 Agent：先探测已有管道（服务已运行形态），失败则拉起 mesh-agent.exe。
-/// M1-1.5：首次连接前检测并清理 runtime 残留；DEV Controller 未就绪时由本进程拉起。
+/// M1-1.5：首次连接前检测并清理 runtime 残留。
+/// 双机架构调整（ADR-004 延续）：
+/// - 无 Controller 配置 → 不拉起 controller / agent，返回 NOT_CONFIGURED（UI 显示「未配置 Controller」）；
+/// - 仅当用户显式选择「本机 Controller」模式且地址为 dev loopback 时，才允许本进程拉起本地 controller.exe；
+/// - 「已有 Controller 地址」模式（含远程/局域网共享 Controller）绝不自动拉起本机 controller。
 #[tauri::command]
 pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcReply, String> {
     if state.connected.load(Ordering::Acquire) {
@@ -101,10 +109,19 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
         }
     }
 
-    // 确保 DEV Controller 就绪（生产 https 远程 Controller 不会在此拉起）。
-    let controller_url = effective_controller_url();
-    let dev_mode = is_dev_controller(&controller_url);
-    if dev_mode && !controller_healthy(&controller_url) {
+    // 生效 Controller 地址：None = 未配置。未配置时不默认连 127.0.0.1、不拉起任何子进程。
+    let Some(controller_url) = effective_controller_url() else {
+        return Ok(IpcReply::ok(serde_json::json!({
+            "state": "NOT_CONFIGURED",
+            "configured": false,
+            "user_facing": "未配置 Controller",
+            "controller_url": "",
+        })));
+    };
+
+    // 是否本机 Controller 模式（显式选择后，MeshLink 才负责拉起 controller.exe）。
+    let local_mode = controller_mode() == "local";
+    let dev_mode = local_mode && is_dev_controller(&controller_url);    if dev_mode && !controller_healthy(&controller_url) {
         spawn_dev_controller(&state)?;
     }
 
@@ -114,7 +131,7 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
     let client = match PipeClient::connect(&pipe, Duration::from_millis(1500)) {
         Ok(c) => c,
         Err(_) => {
-            let child = spawn_agent_process(&pipe, &state.supervisor.runtime)
+            let child = spawn_agent_process(&pipe, &state.supervisor.runtime, &controller_url)
                 .map_err(|e| format!("后台服务启动失败：{e}"))?;
             *state.agent.lock().unwrap() = Some(child);
             PipeClient::connect(&pipe, Duration::from_secs(15))
@@ -131,18 +148,40 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
     send_status(&state)
 }
 
-/// 生效 Controller 地址：环境变量 > UI 已保存配置 > 单一 DEV 默认。
-fn effective_controller_url() -> String {
-    std::env::var("MESHLINK_CONTROLLER_URL")
+/// 当前 Controller 模式：`local` | `remote` | `""`（未配置）。
+/// 环境变量 MESHLINK_CONTROLLER_URL 视为显式指定既有地址（remote 语义，不自动拉起本机）。
+fn controller_mode() -> String {
+    if std::env::var("MESHLINK_CONTROLLER_URL").map(|v| !v.trim().is_empty()).unwrap_or(false) {
+        return "remote".into();
+    }
+    load_ui_config()
         .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            load_ui_config()
-                .ok()
-                .and_then(|v| v.get("controller_url").and_then(|x| x.as_str()).map(String::from))
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| DEFAULT_CONTROLLER_URL.into())
-        })
+        .and_then(|v| v.get("controller_mode").and_then(|x| x.as_str()).map(String::from))
+        .filter(|m| m == "local" || m == "remote")
+        .unwrap_or_default()
+}
+
+/// 生效 Controller 地址：
+/// - 环境变量 `MESHLINK_CONTROLLER_URL` 最高优先级（测试/运维显式覆盖）；
+/// - 否则读 UI 配置：`local` 模式 → 单一默认；`remote` 模式 → 已保存地址；
+/// - 无配置（含旧配置仅 controller_url 无 mode）→ 按已有地址处理；完全无地址 → None（未配置）。
+fn effective_controller_url() -> Option<String> {
+    if let Ok(url) = std::env::var("MESHLINK_CONTROLLER_URL") {
+        let url = url.trim().to_string();
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    let cfg = load_ui_config().ok()?;
+    let mode = cfg.get("controller_mode").and_then(|x| x.as_str()).unwrap_or("");
+    let saved = cfg.get("controller_url").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    match mode {
+        "local" => Some(DEFAULT_CONTROLLER_URL.to_string()),
+        "remote" if !saved.is_empty() => Some(saved),
+        // 旧配置：只有 controller_url、无 controller_mode → 按 remote 处理（不自动拉起本机）。
+        "" if !saved.is_empty() => Some(saved),
+        _ => None, // 未配置 Controller
+    }
 }
 
 /// 是否 DEV Controller（http + localhost/127.0.0.1）——此类才允许本进程拉起。
@@ -199,7 +238,8 @@ fn spawn_dev_controller(state: &IpcState) -> Result<(), String> {
     // 等待 healthz 就绪（最多 ~10s；controller 无参启动很快）。
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        if controller_healthy(&effective_controller_url()) {
+        // 本机 Controller 模式：地址固定为单一默认（DEFAULT_CONTROLLER_URL）。
+        if controller_healthy(DEFAULT_CONTROLLER_URL) {
             return Ok(());
         }
         if std::time::Instant::now() > deadline {
@@ -303,19 +343,46 @@ pub fn get_controller_default() -> Result<String, String> {
 pub fn load_ui_config() -> Result<serde_json::Value, String> {
     let path = ui_config_path();
     if !path.exists() {
-        return Ok(serde_json::json!({ "controller_url": "" }));
+        // 双机架构调整：首次启动无配置 → 未配置 Controller（不再默认 127.0.0.1）。
+        return Ok(serde_json::json!({ "controller_url": "", "controller_mode": "" }));
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读取配置失败：{e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("配置解析失败：{e}"))
+    let mut v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("配置解析失败：{e}"))?;
+    // 兼容旧配置：无 controller_mode 字段时补齐（不覆盖用户已保存地址）。
+    if v.get("controller_mode").is_none() {
+        let mode = if v.get("controller_url").and_then(|x| x.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+            "remote"
+        } else {
+            ""
+        };
+        v["controller_mode"] = serde_json::json!(mode);
+    }
+    Ok(v)
 }
 
-/// 保存 Controller 地址到普通配置（设置页；下次启动 spawn 时作为默认值）。
-/// 仅允许合法地址（生产 HTTPS / DEV localhost）；公网明文 HTTP 拒绝。
+/// 保存 Controller 配置到普通配置（设置页；下次启动 spawn 时作为默认值）。
+/// 双机架构调整：显式记录模式 `local`（本机 Controller，MeshLink 负责拉起）或
+/// `remote`（已有 Controller 地址，绝不自动拉起本机）。仅允许合法地址
+/// （生产 HTTPS / DEV localhost / RFC1918 私网）；公网明文 HTTP 拒绝。
 #[tauri::command]
-pub fn save_controller_url(url: String) -> Result<serde_json::Value, String> {
-    let url = url.trim().trim_end_matches('/').to_string();
-    validate_controller_url(&url).map_err(|e| e)?;
-    let cfg = serde_json::json!({ "controller_url": url });
+pub fn save_controller_config(mode: String, url: String) -> Result<serde_json::Value, String> {
+    let mode = mode.trim().to_string();
+    if mode != "local" && mode != "remote" {
+        return Err("Controller 模式必须是 local（本机）或 remote（已有地址）。".into());
+    }
+    let mut cfg = serde_json::json!({ "controller_mode": mode });
+    if mode == "remote" {
+        let url = url.trim().trim_end_matches('/').to_string();
+        if url.is_empty() {
+            return Err("请输入已有 Controller 地址。".into());
+        }
+        validate_controller_url(&url).map_err(|e| e)?;
+        cfg["controller_url"] = serde_json::json!(url);
+    } else {
+        // local 模式：地址固定为单一默认，不落盘用户地址（避免与远程地址混淆）。
+        cfg["controller_url"] = serde_json::json!(DEFAULT_CONTROLLER_URL);
+    }
     let path = ui_config_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -323,6 +390,27 @@ pub fn save_controller_url(url: String) -> Result<serde_json::Value, String> {
     std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap())
         .map_err(|e| format!("保存配置失败：{e}"))?;
     Ok(cfg)
+}
+
+/// 兼容保留：仅保存地址（旧调用方/测试用）。地址归属按 remote 语义（不自动拉起本机）。
+#[tauri::command]
+pub fn save_controller_url(url: String) -> Result<serde_json::Value, String> {
+    save_controller_config("remote".into(), url)
+}
+
+/// 读取当前 Controller 配置（模式 + 地址 + 生效地址 + 是否已配置）。
+#[tauri::command]
+pub fn get_controller_config() -> Result<serde_json::Value, String> {
+    let cfg = load_ui_config().ok().unwrap_or_else(|| serde_json::json!({}));
+    let mode = cfg.get("controller_mode").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let url = cfg.get("controller_url").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let effective = effective_controller_url().unwrap_or_default();
+    Ok(serde_json::json!({
+        "configured": !effective.is_empty(),
+        "mode": mode,
+        "controller_url": url,
+        "effective_url": effective,
+    }))
 }
 
 /// Controller URL 白名单（与 controller-client parse_base_url 对齐）：
@@ -431,7 +519,7 @@ fn send_status(state: &State<'_, IpcState>) -> Result<IpcReply, String> {
     }
 }
 
-fn spawn_agent_process(pipe: &str, runtime: &RuntimeDir) -> Result<Child, String> {
+fn spawn_agent_process(pipe: &str, runtime: &RuntimeDir, controller_url: &str) -> Result<Child, String> {
     let exe = std::env::current_exe().map_err(|e| format!("exe 路径失败：{e}"))?;
     let dir = exe.parent().ok_or("exe 目录解析失败")?;
     let agent = dir.join("mesh-agent.exe");
@@ -439,8 +527,8 @@ fn spawn_agent_process(pipe: &str, runtime: &RuntimeDir) -> Result<Child, String
         return Err(format!("未找到后台服务 {}", agent.display()));
     }
 
-    // Controller 地址：环境变量优先，其次 UI 已保存配置，最后 DEV 默认值。
-    let controller = effective_controller_url();
+    // Controller 地址由调用方（agent_connect）解析传入：未配置时不会走到本函数。
+    let controller = controller_url.to_string();
     let overlay = std::env::var("MESHLINK_OVERLAY").unwrap_or_else(|_| "wintun".into());
     let data_dir = std::env::var("MESHLINK_DATA_DIR").unwrap_or_else(|_| {
         let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
