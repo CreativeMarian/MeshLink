@@ -30,6 +30,8 @@ v0.1.0
 
 [x] Session 生命周期日志（CREATE / JOIN / NOT FOUND / CLOSE + join 错误码透传）
 
+[x] 双机联机修复（共享 Controller 拓扑；局域网 RFC1918 明文显式放行）
+
 
 ## Current Development
 

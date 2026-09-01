@@ -49,6 +49,8 @@ func main() {
 		tlsKey      = flag.String("tls-key", envOr("CONTROLLER_TLS_KEY", ""), "TLS 私钥 PEM（与 tls-cert 成对）")
 		overlayPool = flag.String("overlay-pool", envOr("CONTROLLER_OVERLAY_POOL", "10.88.0.0/16"),
 			"Overlay IPAM 地址池 CIDR（每个连接会话从中切一个 /24）")
+		allowLanPlaintext = flag.Bool("allow-lan-plaintext", os.Getenv("CONTROLLER_ALLOW_LAN_PLAINTEXT") == "1",
+			"允许明文 HTTP 监听私网地址（仅 RFC1918 局域网；公网明文永远禁止）")
 	)
 	flag.Parse()
 
@@ -66,17 +68,25 @@ func main() {
 	//   - 原生 TLS（--tls-cert/--tls-key）：HTTPS 监听，任意地址；
 	//   - 生产公网也可以置于 TLS 终结层（Cloudflare Tunnel 等）之后，
 	//     此时本进程仍明文但只绑定内网地址（trust-proxy 开启）。
+	//   - 局域网双机联机：私网地址 + -allow-lan-plaintext 显式放行
+	//     （仅 RFC1918；公网明文即使加开关也拒绝）。
 	if !tlsEnabled {
-		banner := "DEV MODE ONLY (plaintext HTTP): production must terminate TLS (HTTPS/WSS) in front of this listener"
-		if isLoopback(*listen) {
+		loop := isLoopback(*listen)
+		lan := isPrivate(*listen)
+		ok := loop || (lan && *allowLanPlaintext)
+		if ok {
+			banner := "DEV MODE ONLY (plaintext HTTP): production must terminate TLS (HTTPS/WSS) in front of this listener"
 			fmt.Fprintln(os.Stderr, "=======================================================================")
 			fmt.Fprintln(os.Stderr, banner)
 			fmt.Fprintln(os.Stderr, "listen="+*listen, "db="+*dbPath, "overlay-pool="+*overlayPool)
+			if lan && !loop {
+				fmt.Fprintln(os.Stderr, "LAN PLAINTEXT ENABLED (RFC1918 only): use only on a trusted local network")
+			}
 			fmt.Fprintln(os.Stderr, "=======================================================================")
 			logger.Warn(banner, "listen", *listen)
 		} else {
-			// 非回环监听 + 明文：拒绝启动（防止误配公网明文信令）。
-			logger.Error("refusing plaintext listener on non-loopback address; use --tls-cert/--tls-key or put a TLS terminator in front",
+			// 非回环/非私网明文：拒绝启动（公网明文永远禁止）。
+			logger.Error("refusing plaintext listener on non-loopback/non-private address; use --tls-cert/--tls-key or put a TLS terminator in front",
 				"listen", *listen)
 			os.Exit(2)
 		}
@@ -198,4 +208,18 @@ func isLoopback(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// isPrivate 判定监听地址是否 RFC1918 私网（局域网联机用）。
+// 公网地址即使传入也返回 false——`-allow-lan-plaintext` 只放行私网。
+func isPrivate(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsPrivate()
 }

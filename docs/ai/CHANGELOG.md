@@ -54,6 +54,31 @@ Added:
   `SESSION_CODE_INVALID` → 正确码 join 双端 Connected）。
 
 
+## 双机联机修复（真实双机 Release，2026-09-01）
+
+Fixed:
+
+- 真实双机 `SESSION_NOT_FOUND / SESSION_CODE_INVALID (HTTP 404) / 连接码对应的会话不存在`
+  根因：双机各自 spawn 独立 controller.exe + 独立 SQLite DB → A 的 code 只在 A 的 DB，
+  B 查询自己的 DB 必然 404。属拓扑问题，非 session 创建缺陷。
+- 修复方案：双机共享同一个 Controller。
+  - Controller `-allow-lan-plaintext`（env `CONTROLLER_ALLOW_LAN_PLAINTEXT=1`）：
+    放行 RFC1918 私网明文监听；公网明文无论是否加开关一律拒绝启动（安全红线不变）。
+  - controller-client `parse_base_url` + MeshLink UI `validate_controller_url` 白名单
+    放行 RFC1918 私网 http（10/8、172.16/12、192.168/16）；公网 http 仍拒绝、无降级。
+  - 新增 `isPrivate()`（Go）与 `is_private_host()`（Rust UI）RFC1918 判定助手。
+  - dist/README.md 新增「双机联机」部署说明（共享 Controller + 私网明文 + 步骤）。
+
+Added:
+
+- 集成测试 `release_two_machine_smoke`（真实 dist 二进制，默认 #[ignore]）：
+  独立 Controller-B join A 的 code → `SESSION_CODE_INVALID`（复现根因）；
+  同一 Controller-A join 同 code → PeerFound/Connected（code 存在于 Controller-A）；
+  公网明文监听被拒绝（安全约束）。单测 `TestPlaintextListenPolicy`（Go）+
+  `dev_mode_allows_only_loopback_and_private_http`（Rust）防默认值/白名单漂移。
+- MeshLink UI 设置页 / agent 现在可保存并连接 RFC1918 私网 Controller（局域网双机联机）。
+
+
 ## Future
 
 M1-3:

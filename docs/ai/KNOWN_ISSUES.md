@@ -43,6 +43,25 @@
 - creator 轮询 `get_session` 失败记录为 `[SESSION NOT FOUND] poll`（debug 级，避免轮询期刷屏）。
 
 
+## 双机联机（真实双机 Release，2026-09-01）
+
+- 根因已定位并修复：两台机器默认 `http://127.0.0.1:18080` 时各自拉起**独立的本机
+  Controller + 独立 SQLite DB**，A 创建的 6 位码只存在于 A 的 DB，B 输入同码查询 B 的
+  Controller → `SESSION_CODE_INVALID (404) / 连接码对应的会话不存在`。这是**拓扑问题**，
+  不是 session 创建代码缺陷——双机必须共享**同一个** Controller。
+- 修复：Controller 新增 `-allow-lan-plaintext`（仅 RFC1918 私网明文；公网明文即使加开关也
+  拒绝启动）；controller-client / MeshLink UI 白名单放行 RFC1918 私网 http（公网 http 仍拒）。
+  推荐部署：一台机器 `controller.exe -addr <私网IP>:18080 -allow-lan-plaintext`，双机
+  MeshLink 设置页都指向同一私网地址（详见 dist/README.md「双机联机」）。
+- 验证：新增 `release_two_machine_smoke`（真实 dist 二进制）：独立 Controller-B 上 join A 的
+  code → `SESSION_CODE_INVALID`（复现根因）；与 A 同一 Controller 上 join 同 code → PeerFound
+  （证明 code 存在于 Controller-A）；公网明文监听被拒绝（安全约束仍生效）。
+- 物理双机实机流程仍标 `PENDING_REAL_WORLD_VALIDATION`（本环境无第二台物理机）；已用
+  release 二进制等价覆盖 Controller/Agent/UI bridge 全链路。
+- 自动化集成测试在高负载并行运行时偶发启动轮询超时（free_port TOCTOU 加剧），单测/顺序跑
+  全部 PASS；属测试基建抖动，不影响产品逻辑。
+
+
 ## Development Notes
 
 

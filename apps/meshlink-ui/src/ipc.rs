@@ -327,6 +327,7 @@ pub fn save_controller_url(url: String) -> Result<serde_json::Value, String> {
 
 /// Controller URL 白名单（与 controller-client parse_base_url 对齐）：
 /// DEV 仅 http://localhost/ http://127.0.0.1/；生产必须 https://。无降级。
+/// 局域网双机联机：http:// 私网地址（RFC1918）显式放行（仅可信局域网）。
 fn validate_controller_url(url: &str) -> Result<(), String> {
     let (scheme, rest) = match url.split_once("://") {
         Some((s, r)) => (s.to_ascii_lowercase(), r),
@@ -340,9 +341,24 @@ fn validate_controller_url(url: &str) -> Result<(), String> {
         if host == "localhost" || host == "127.0.0.1" {
             return Ok(());
         }
-        return Err("生产 Controller 必须使用 HTTPS（开发机可用 http://localhost/ 或 http://127.0.0.1/）。".into());
+        // 局域网（RFC1918）明文：仅可信局域网联机用；公网明文始终拒绝。
+        if is_private_host(&host) {
+            return Ok(());
+        }
+        return Err("生产 Controller 必须使用 HTTPS（开发机可用 http://localhost/ 或 http://127.0.0.1/，局域网联机可用私网地址）。".into());
     }
     Err("Controller 地址仅支持 https://（开发机可用 http://localhost/ 或 http://127.0.0.1/）。".into())
+}
+
+/// 判定主机名是否 RFC1918 私网（10/8、172.16/12、192.168/16）。
+fn is_private_host(host: &str) -> bool {
+    use std::net::IpAddr;
+    match host.parse::<IpAddr>() {
+        // Ipv4Addr::is_private() 稳定（RFC1918）；IPv6 局域网联机请走 https。
+        Ok(IpAddr::V4(v4)) => v4.is_private(),
+        Ok(IpAddr::V6(_)) => false,
+        Err(_) => false,
+    }
 }
 
 fn ui_config_path() -> std::path::PathBuf {

@@ -32,7 +32,9 @@ Update:
 
 Then:
 
-- 项目当前无 git 仓库（历史里程碑均未 commit）；如后续初始化 git，按模板提交。
+- 项目已建立 git（remote：git@github.com:CreativeMarian/MeshLink.git，branch main）：
+  每个功能阶段 git add/commit/push，提交信息清晰（如 "Fix quick session creation flow"）；
+  完成后更新 CURRENT_STATUS.md / CHANGELOG.md / NEXT_TASK.md 再提交。
 
 
 Finally report:

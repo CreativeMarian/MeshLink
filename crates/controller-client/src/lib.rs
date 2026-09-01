@@ -336,12 +336,17 @@ fn parse_base_url(base_url: &str) -> ApiResult<(Scheme, String, u16)> {
     };
     let scheme = match scheme_str {
         "http" => {
-            if hostport != "127.0.0.1" && hostport != "localhost"
-                && !hostport.starts_with("127.0.0.1:")
-                && !hostport.starts_with("localhost:")
-            {
+            let host = hostport.rsplit_once(':').map(|(h, _)| h).unwrap_or(hostport);
+            let ok_loop = host == "127.0.0.1" || host == "localhost";
+            let ok_lan = match host.parse::<std::net::IpAddr>() {
+                // Ipv4Addr::is_private() 稳定（RFC1918）；IPv6 局域网联机请走 https。
+                Ok(std::net::IpAddr::V4(v4)) => v4.is_private(),
+                Ok(std::net::IpAddr::V6(_)) => false,
+                Err(_) => false,
+            };
+            if !(ok_loop || ok_lan) {
                 return Err(ApiError::transport(format!(
-                    "公网明文 HTTP 禁止（{hostport}）：DEV MODE 仅允许 http://127.0.0.1|localhost，PRODUCTION 请用 https://"
+                    "公网明文 HTTP 禁止（{hostport}）：DEV MODE 仅允许 http://127.0.0.1|localhost 或 RFC1918 私网，PRODUCTION 请用 https://"
                 )));
             }
             Scheme::HttpLocal
@@ -1048,12 +1053,16 @@ mod tests {
     }
 
     #[test]
-    fn dev_mode_allows_only_loopback_http() {
+    fn dev_mode_allows_only_loopback_and_private_http() {
         assert!(Client::new("http://127.0.0.1:18080").is_ok());
         assert!(Client::new("http://localhost:18080").is_ok());
         assert!(Client::new("http://localhost").is_ok());
-        // 公网明文 HTTP：一律拒绝（规格一）。
-        for bad in ["http://10.0.0.5:18080", "http://control.example.com", "http://192.168.1.10"] {
+        // 局域网（RFC1918 私网）明文：允许（双机联机显式放行）。
+        assert!(Client::new("http://192.168.1.10:18080").is_ok(), "私网应允许");
+        assert!(Client::new("http://10.0.0.5:18080").is_ok(), "私网应允许");
+        assert!(Client::new("http://172.16.0.8:18080").is_ok(), "私网应允许");
+        // 公网明文 HTTP：一律拒绝（规格一，私网之外的 http 一律拒）。
+        for bad in ["http://control.example.com", "http://8.8.8.8:18080", "http://example.com:18080"] {
             let err = Client::new(bad).err().unwrap_or_else(|| panic!("{bad} 应拒绝"));
             assert!(err.message.contains("公网明文"), "{bad} 拒绝原因应指明明文禁止: {err}");
         }
