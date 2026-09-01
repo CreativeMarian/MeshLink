@@ -40,6 +40,7 @@ fn main() {
             ipc::save_controller_config,
             ipc::get_controller_config,
             ipc::get_controller_default,
+            ipc::read_log_files,
         ])
         .build(tauri::generate_context!())
         .expect("MeshLink UI 构建失败")

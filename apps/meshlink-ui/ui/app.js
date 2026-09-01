@@ -54,6 +54,10 @@ const S = {
   controllerUrl: "",
   controllerCfg: {},   // 连接配置（mode / lan_ip / effective_url，供设置页展示）
   ctlErr: false,      // 网络服务不可达横幅可见性（事件驱动 + poll 兜底）
+  // 综合修复 P0-5：全局连接状态机（STARTING / CONNECTING / CONNECTED / DISCONNECTED / ERROR）。
+  connState: "STARTING",
+  connMeta: { server: "", latency: "" }, // 首页顶部：服务器 + 延迟
+  reconnectTimer: null,
 };
 
 /* ---------------- 工具 ---------------- */
@@ -116,6 +120,9 @@ function showQuickCode(code, expiresAt) {
   S.expiresAt = expiresAt || null;
   $("create-code").textContent = code;
   startCountdown(expiresAt);
+  // 综合修复 P1-2：创建视图显示连接服务器（不显示本机局域网地址）。
+  const cs = $("create-server");
+  if (cs) cs.textContent = S.controllerUrl || "--";
   if (S.view === "home" || S.view === "friends") show("create");
 }
 
@@ -226,10 +233,22 @@ function renderStatus(snap) {
   const pill = $("status-pill");
   const text = $("status-text");
   const state = snap && snap.state;
-  // poll 兜底：已恢复即隐藏 Controller 不可达横幅。
+  // 综合修复 P0-5：全局连接状态机（STARTING/CONNECTING/CONNECTED/DISCONNECTED/ERROR）。
+  // UI 不自行推断 Agent 内部状态；这里只映射 GetStatus.state。
   if (state === "READY" || state === "CONNECTED") {
+    setConnState("CONNECTED");
+    hideReconnect();
     hideControllerUnreachable();
     $("home-noconfig").classList.add("hidden");
+  } else if (state === "FAILED" || state === "STOPPED") {
+    setConnState("ERROR");
+  } else if (state === "STARTING") {
+    setConnState("STARTING");
+  } else if (state === "NOT_CONFIGURED") {
+    // 综合修复：正式版未配置时默认连公网 Controller，本分支仅防御（不会出现）。
+    setConnState("DISCONNECTED");
+  } else if (state) {
+    setConnState("CONNECTING");
   }
   let cls = "dot-gray", label = "未知";
   if (state === "READY") { cls = "dot-green"; label = "已就绪"; }
@@ -326,6 +345,7 @@ function handleEvent(ev) {
     case "ControllerConnected":
       S.ctlErr = false;
       hideControllerUnreachable();
+      hideReconnect();
       renderStatus({ state: "READY", user_facing: "已就绪", device_id: d.device_id });
       refreshFriends();
       // 设置页「当前 Controller 地址」实时刷新（即便不在设置页也保持最新值）。
@@ -421,9 +441,19 @@ function handleEvent(ev) {
 
 function handleErrorEvent(d) {
   const code = d.code || "UNKNOWN";
+  // 后台服务断开：显示「连接断开 [重新连接]」+ 自动重连（P0-5/P2-2）。
+  if (code === "AGENT_STOPPED") {
+    S.ctlErr = false;
+    setConnState("DISCONNECTED");
+    showReconnect();
+    renderStatus({ state: "FAILED", user_facing: "网络服务未启动" });
+    return;
+  }
   // 网络服务不可达：不要只卡着等待，显示专用横幅（当前地址 + 重连 + 改设置）。
   if (code === "CONTROLLER_UNREACHABLE") {
     S.ctlErr = true;
+    setConnState("ERROR");
+    showReconnect();
     showControllerUnreachable(S.controllerUrl || "");
     renderStatus({ state: "FAILED", user_facing: "网络服务未启动" });
     if (S.view === "progress") setStep(-1);
@@ -480,25 +510,100 @@ async function retryController() {
   }
 }
 
-/* ---------------- GetStatus 轮询 ---------------- */
+/* ---------------- 综合修复 P0-5：实时连接状态机 ---------------- */
+
+function setConnState(state) {
+  if (S.connState === state) return;
+  S.connState = state;
+  if (state === "CONNECTED") {
+    hideReconnect();
+  }
+}
+
+function showReconnect() {
+  const b = $("btn-reconnect");
+  if (b) b.classList.remove("hidden");
+}
+
+function hideReconnect() {
+  const b = $("btn-reconnect");
+  if (b) b.classList.add("hidden");
+}
+
+// 更新首页顶部服务器 + 延迟（经 GetControllerStatus；与设置页同一数据源）。
+function updateConnMeta(status) {
+  if (!status) return;
+  S.connMeta.server = status.url ? hostOf(status.url) : "--";
+  S.connMeta.latency = status.connected ? status.latency_ms + " ms" : "--";
+  $("conn-server").textContent = S.connMeta.server;
+  $("conn-latency").textContent = S.connMeta.latency;
+  const meta = $("conn-meta");
+  if (meta) meta.classList.toggle("hidden", !status.connected);
+}
+
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return url || "--"; }
+}
+
+// 断开后自动重连（Agent 管道恢复时）：先清理残留会话 UI，再调 agent_connect。
+async function reconnectNow() {
+  const b = $("btn-reconnect");
+  if (b) b.disabled = true;
+  renderStatus({ state: "STARTING", user_facing: "正在连接服务..." });
+  try {
+    const r = await invoke("agent_connect");
+    if (r && r.ok && r.data) {
+      renderStatus(r.data);
+      loadControllerStatus();
+      refreshFriends();
+      refreshRecent();
+      toast("已重新连接");
+    } else {
+      showReconnect();
+    }
+  } catch (e) {
+    // 失败：保持可重试（下次 poll 或手动点击再试）。
+    showReconnect();
+    toast("重新连接失败：" + formatError(e), true);
+  } finally {
+    if (b) b.disabled = false;
+  }
+}
+
+// 心跳：定期探测 Agent 状态（P0-5）。GetStatus 失败 / AGENT_STOPPED → 显示断开 +
+// 自动重连。恢复（READY/CONNECTED）→ 清除断开态。同时刷新连接延迟。
+async function heartbeat() {
+  let r = null;
+  try {
+    r = await ipcRequest("GetStatus");
+  } catch { /* Agent 断开：走 r 为 null 分支 */ }
+  if (r && r.ok && r.data) {
+    const snap = r.data;
+    renderStatus(snap);
+    if (S.view === "progress" && snap.state === "CONFIGURING_OVERLAY") {
+      setStep(STEP_OVERLAY);
+    }
+    if (snap.state === "FAILED" && S.view === "progress") {
+      setStep(-1);
+      $("progress-title").textContent = "连接失败";
+    }
+    if (snap.state === "READY" || snap.state === "CONNECTED") {
+      // 已恢复：拉一次连接延迟（服务器 + 延迟实时刷新）。
+      loadControllerStatus();
+    }
+  } else {
+    // GetStatus 失败 → Agent 管道断开 → 断开态 + 自动重连。
+    setConnState("DISCONNECTED");
+    showReconnect();
+    renderStatus({ state: "FAILED", user_facing: "网络服务未启动" });
+  }
+}
+
+/* ---------------- GetStatus 心跳轮询（综合修复 P0-5：3s） ---------------- */
 
 function startStatusPoll() {
   if (S.pollTimer) clearInterval(S.pollTimer);
-  S.pollTimer = setInterval(async () => {
-    try {
-      const r = await ipcRequest("GetStatus");
-      if (!r || !r.ok || !r.data) return;
-      const snap = r.data;
-      renderStatus(snap);
-      if (S.view === "progress" && snap.state === "CONFIGURING_OVERLAY") {
-        setStep(STEP_OVERLAY);
-      }
-      if (snap.state === "FAILED" && S.view === "progress") {
-        setStep(-1);
-        $("progress-title").textContent = "连接失败";
-      }
-    } catch { /* Agent 断开：agent-event 已处理 */ }
-  }, 700);
+  S.pollTimer = setInterval(heartbeat, 3000);
 }
 
 /* ---------------- 6 位码视图动作 ---------------- */
@@ -903,7 +1008,8 @@ async function refreshDevices() {
 
 /* ---------------- 设置：连接模式（创建连接 / 加入连接，用户化） ---------------- */
 
-const DEFAULT_CONTROLLER_URL = "http://127.0.0.1:18080";
+// 综合修复 P0-2：默认公网 Controller（用户已实测可用）。JS 不再各自硬编码 127.0.0.1。
+const DEFAULT_PUBLIC_CONTROLLER_URL = "https://controller.bpbpanel.cc.cd";
 
 // 用户可见模式：创建连接 = 本机发起网络（内部 local，有局域网地址自动启用局域网访问）；
 // 加入连接 = 连接别人的网络（内部 remote，不启动本机服务）。
@@ -924,14 +1030,10 @@ function applyControllerModeUI(mode, url) {
 function syncControllerModeUI() {
   const local = currentControllerMode() === "local";
   $("ctl-url-row").style.display = "flex";
-  $("ctl-lan-card").style.display = local ? "block" : "none";
   if (local) {
-    $("ctl-mode-hint").textContent = "我的电脑作为连接发起方。其他设备可通过我的地址加入网络（同一局域网自动开放访问）。";
-    // 显示本机地址（用户化：不叫监听地址/端口）。
-    const cfg = S.controllerCfg || {};
-    const ip = cfg.lan_ip || "获取中...";
-    $("ctl-lan-ip").textContent = ip ? ip + ":18080" : "--";
-    $("ctl-lan-note").textContent = ip ? "其他设备可加入此网络" : "未检测到局域网地址，仅本机可用";
+    // 综合修复 P1-3：创建连接不再展示「我的电脑地址」——公网跨网无意义；
+    // 连接服务始终使用当前服务器（默认公网 Controller）。
+    $("ctl-mode-hint").textContent = "我的电脑作为连接发起方：生成连接码，让其他设备加入。";
   } else {
     $("ctl-mode-hint").textContent = "我的电脑加入别人创建的网络。需要填写对方提供的服务器地址。";
   }
@@ -1039,7 +1141,7 @@ async function rejectConnectionRequest() {
   try { await send("RejectConnectionRequest", { session_id: sid }); } catch { /* 尽力 */ }
 }
 
-/* ---------------- 诊断 ---------------- */
+/* ---------------- 诊断（高级） ---------------- */
 
 async function openDiagnostics() {
   show("diag");
@@ -1049,6 +1151,60 @@ async function openDiagnostics() {
     renderDiagnostics(data);
   } catch (e) {
     $("diag-body").innerHTML = "诊断加载失败：" + formatError(e);
+  }
+}
+
+/* ---------------- 诊断中心（综合修复 P2-1：健康/详情/日志三层） ---------------- */
+
+async function openDiagCenter() {
+  show("diagcenter");
+  renderDiagCenter();
+  loadDiagLogs("all");
+}
+
+// 第一、二层：健康状态 + 详细信息（GetControllerStatus + GetDiagnostics）。
+async function renderDiagCenter() {
+  // 连接服务（Agent 在跑） + 服务器连接（Controller）——同一数据源。
+  try {
+    const ctl = await send("GetControllerStatus");
+    $("dc-h-agent").textContent = "正常";
+    $("dc-h-agent").className = "dc-health-val ok";
+    $("dc-h-ctl").textContent = ctl.connected ? "正常" : "断开";
+    $("dc-h-ctl").className = "dc-health-val " + (ctl.connected ? "ok" : "bad");
+    $("dc-server").textContent = ctl.url ? hostOf(ctl.url) : "--";
+    $("dc-latency").textContent = ctl.connected ? ctl.latency_ms + " ms" : "--";
+    $("dc-device").textContent = ctl.device_id || "--";
+  } catch (e) {
+    $("dc-h-agent").textContent = "异常";
+    $("dc-h-agent").className = "dc-health-val bad";
+    $("dc-h-ctl").textContent = "断开";
+    $("dc-h-ctl").className = "dc-health-val bad";
+    $("dc-latency").textContent = "--";
+  }
+  // 网络：无 Peer 是正常空闲态（"暂无连接数据"与"接口失败"分开）。
+  try {
+    const d = await send("GetDiagnostics");
+    const hasPeer = d.session && d.session.peers && d.session.peers.length;
+    $("dc-path").textContent = d.current_path === "n2n" ? "N2N Relay" : d.current_path === "directlink" ? "DirectLink" : "--";
+    $("dc-h-net").textContent = hasPeer ? "正常" : "空闲";
+    $("dc-h-net").className = "dc-health-val" + (hasPeer ? " ok" : "");
+  } catch {
+    $("dc-h-net").textContent = "未知";
+    $("dc-h-net").className = "dc-health-val bad";
+  }
+  $("dc-uptime").textContent = "本次运行";
+}
+
+// 第三层：日志查看（分类读取 logs/ 目录）。
+async function loadDiagLogs(cat) {
+  const view = $("dc-log-view");
+  view.textContent = "加载中...";
+  try {
+    const data = await invoke("read_log_files", { category: cat, limit: 300 });
+    const lines = (data && data.lines) || [];
+    view.textContent = lines.length ? lines.join("\n") : "（暂无日志）";
+  } catch (e) {
+    view.textContent = "日志加载失败：" + formatError(e);
   }
 }
 
@@ -1139,10 +1295,18 @@ async function boot() {
   try {
     const r = await invoke("agent_connect");
     if (r && r.ok && r.data) renderStatus(r.data);
+    else if (r && !r.ok && r.error) {
+      // 综合修复 P2-2：启动失败给出用户化提示 + 查看诊断。
+      $("status-pill").className = "dot dot-red";
+      $("status-text").textContent = "连接服务启动失败";
+      showReconnect();
+      toast("连接服务启动失败，请查看诊断中心获取详情", true);
+    }
   } catch (e) {
     $("status-pill").className = "dot dot-red";
-    $("status-text").textContent = "服务未连接";
-    showError($("home-error"), errorCode(e), "后台服务未连接：" + formatError(e));
+    $("status-text").textContent = "连接服务启动失败";
+    showReconnect();
+    showError($("home-error"), errorCode(e), "连接服务启动失败：" + formatError(e));
   }
   await listen("agent-event", (e) => handleEvent(e.payload));
   await listen("meshlink-invite", (e) => {
@@ -1154,12 +1318,12 @@ async function boot() {
     }
   });
   startStatusPoll();
-  // 读取已保存的连接配置回填设置页（含模式与局域网地址）；无保存值保持未配置态。
+  // 读取已保存的连接配置回填设置页（含模式与生效地址）；无保存值保持默认公网。
   try {
     const cfg = await invoke("get_controller_config");
     if (cfg) {
       S.controllerCfg = cfg;
-      S.controllerUrl = cfg.effective_url || "";
+      S.controllerUrl = cfg.effective_url || S.controllerUrl;
       if (cfg.mode) applyControllerModeUI(cfg.mode, cfg.controller_url || cfg.effective_url || "");
       else applyControllerModeUI("remote", cfg.controller_url || "");
     }
@@ -1189,8 +1353,11 @@ async function loadControllerStatus() {
     $("ctl-state").textContent = data.connected ? "已连接" : "未连接";
     $("ctl-effective-url").textContent = data.url || "--";
     $("ctl-latency").textContent = data.connected ? data.latency_ms + " ms" : "--";
-    $("ctl-server").textContent = data.url ? new URL(data.url).host : "--";
+    $("ctl-server").textContent = data.url ? hostOf(data.url) : "--";
     $("ctl-device").textContent = data.device_id || "--";
+    // 首页顶部服务器 + 延迟（P0-5 实时连接状态）。
+    S.controllerUrl = data.url || S.controllerUrl;
+    updateConnMeta(data);
   } catch { /* 忽略 */ }
 }
 
@@ -1210,6 +1377,18 @@ $("btn-disconnect").addEventListener("click", disconnectPeer);
 $("btn-connected-home").addEventListener("click", () => show("home"));
 $("btn-diag").addEventListener("click", openDiagnostics);
 $("btn-diag-back").addEventListener("click", () => show("home"));
+// 综合修复 P0-5：首页「重新连接」按钮。
+$("btn-reconnect").addEventListener("click", reconnectNow);
+// 综合修复 P2-1：诊断中心入口与返回。
+$("btn-diagcenter").addEventListener("click", openDiagCenter);
+$("btn-diagcenter-back").addEventListener("click", () => show("settings"));
+document.querySelectorAll(".dc-tab").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".dc-tab").forEach((x) => x.classList.remove("active"));
+    b.classList.add("active");
+    loadDiagLogs(b.dataset.logcat);
+  });
+});
 $("join-code").addEventListener("input", (e) => {
   e.target.value = normalizeQuickCode(e.target.value);
 });

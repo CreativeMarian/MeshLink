@@ -72,7 +72,10 @@ fn spawn_controller_default(tmp: &std::path::Path) -> ControllerGuard {
         .arg("-db")
         .arg(tmp.join("controller-default.db"))
         .env_remove("CONTROLLER_LISTEN") // 排除外部环境干扰，测真实默认。
-        .stdout(Stdio::from(log.try_clone().expect("dup log")))
+        // 只重定向 stderr：Controller 的 listen= 启动日志在 stderr。
+        // （stdout 与 stderr 指向同一文件的 Windows 双句柄写入会互相覆盖导致日志为空，
+        //   故 stdout 丢弃，断言只依赖 stderr。）
+        .stdout(Stdio::null())
         .stderr(Stdio::from(log))
         .spawn()
         .expect("spawn controller");

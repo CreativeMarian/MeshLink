@@ -45,6 +45,15 @@ v0.1.0
     Controller 只做注册/Session/信令，数据面仍 Agent↔Agent P2P；UI 保持创建/加入两入口；
     dist README 增加公网部署架构说明）
 
+[x] 客户端正式版架构 + 公网 Controller（综合修复 P0/P1/P2）：
+    正式版禁止客户端自动启动 controller.exe（仅 --local-controller dev 放行）；Controller 地址
+    优先级 MESHLINK_CONTROLLER_URL env > 用户保存 > 默认公网 https://controller.bpbpanel.cc.cd >
+    本地(dev)，永不回退 127.0.0.1；双击 MeshLink.exe 自动拉起 mesh-agent（3 次重试）；
+    CREATE_NO_WINDOW 隐藏子进程；实时连接状态 STARTING/CONNECTING/CONNECTED/DISCONNECTED/ERROR +
+    3s 心跳 + 自动重连；Session 全局保存 + 重启恢复 6 位码（Controller get_session 验证）；
+    创建页显示连接服务器（不显示本机局域网地址）；诊断中心三层（健康/详情/日志查看）；
+    logs/ 六类日志（app/agent/connection/controller/network/error）；启动失败自动恢复最多 3 次。
+
 
 ## Current Development
 

@@ -52,6 +52,10 @@ html, body {
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 16px 18px; display: flex; align-items: center; gap: 10px;
 }
+.status-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.conn-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.conn-meta-label { color: #9aa1ac; }
+.conn-meta .mono { font-weight: 600; color: var(--text-2); }
 .pill {
   font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
 }
@@ -103,6 +107,10 @@ html, body {
 .waiting-hint {
   text-align: center; margin-top: 22px; color: var(--primary); font-size: 14px;
 }
+.server-hint {
+  text-align: center; margin-top: 10px; font-size: 12.5px; color: var(--text-2);
+}
+.server-hint .mono { font-weight: 600; color: var(--text-2); }
 .waiting-hint::after {
   content: ""; display: inline-block; width: 1em; text-align: left;
   animation: dots 1.2s steps(4, end) infinite;
@@ -306,4 +314,29 @@ html, body {
 
 /* ---------- 迷你设备行 ---------- */
 .home-device-card .info-label { font-size: 12px; }
+
+/* ---------- 诊断中心（综合修复 P2-1） ---------- */
+.dc-card {
+  margin-top: 12px; background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 4px 18px 8px;
+}
+.dc-health-row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; }
+.dc-health-row + .dc-health-row { border-top: 1px solid var(--border); }
+.dc-health-val { font-size: 14px; font-weight: 600; }
+.dc-health-val.ok { color: var(--ok); }
+.dc-health-val.bad { color: var(--danger); }
+.dc-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.dc-tab {
+  border: 1px solid var(--border); background: var(--card); color: var(--text-2);
+  font-size: 12.5px; padding: 6px 12px; border-radius: 999px; cursor: pointer;
+}
+.dc-tab:hover { background: #f2f6ff; color: var(--primary); }
+.dc-tab.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.dc-log {
+  margin-top: 10px; background: #141821; color: #c7d0e0; border-radius: 10px;
+  padding: 14px; font-family: Consolas, monospace; font-size: 12px;
+  white-space: pre-wrap; word-break: break-all; user-select: text;
+  max-height: 320px; overflow-y: auto; line-height: 1.6;
+}
+.dc-log .log-empty { color: #7c8494; }
 

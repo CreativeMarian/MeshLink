@@ -256,6 +256,9 @@ pub(crate) struct AgentCore {
     /// M1-2：当前连接实际路径（"" / "directlink" / "n2n"）；由建链流程在 CONNECTED
     /// 时写入，UI 经 GetStatus.current_path 展示 DirectLink / N2N Relay。
     pub current_path: Mutex<String>,
+    /// M1-1.5+（P1-1）：软件重启后恢复的活动会话（data_dir/session_persist.json
+    /// 持久化 + Controller 验证）。仅承载 6 位码展示（等待态），不含传输层资源。
+    pub recovered_session: Mutex<Option<ActiveSession>>,
 }
 
 impl AgentCore {
@@ -292,15 +295,82 @@ impl AgentCore {
         let session = self.session.lock().unwrap().as_ref().map(session_snapshot);
         snap.session = session;
         // 顶层 active_session：即使 UI 页面切换/重绘，6 位码也能恢复（用户规格四）。
-        snap.active_session = self.session.lock().unwrap().as_ref().map(|s| ActiveSession {
-            session_id: s.session_id.clone(),
-            code: s.code.clone(),
-            status: state.wire(),
-            expires_at: s.expires_at.clone(),
-        });
+        // P1-1：软件重启后无活动 session（内存空）时，用 Controller 验证过的恢复会话。
+        snap.active_session = match self.session.lock().unwrap().as_ref() {
+            Some(s) => Some(ActiveSession {
+                session_id: s.session_id.clone(),
+                code: s.code.clone(),
+                status: state.wire(),
+                expires_at: s.expires_at.clone(),
+            }),
+            None => self.recovered_session.lock().unwrap().clone(),
+        };
         // M1-2：当前连接实际路径（directlink | n2n；未连接 = ""）。
         snap.current_path = self.current_path.lock().unwrap().clone();
         snap
+    }
+
+    /// P1-1：活动会话持久化（data_dir/session_persist.json——非 runtime，退出不清除，
+    /// 供软件重启后恢复 6 位码）。仅存展示字段，不含密钥/传输层资源。
+    fn persist_session(&self, session_id: &str, code: &str, expires_at: Option<&str>, status: &str) {
+        let path = self.cfg.data_dir.join("session_persist.json");
+        let v = serde_json::json!({
+            "session_id": session_id,
+            "code": code,
+            "expires_at": expires_at,
+            "status": status,
+        });
+        if let Err(e) = std::fs::create_dir_all(&self.cfg.data_dir)
+            .and_then(|_| std::fs::write(&path, serde_json::to_vec(&v).unwrap_or_default()))
+        {
+            tracing::warn!(target: "agent", error = %e, "活动会话持久化失败");
+        }
+    }
+
+    /// P1-1：清除持久化会话与内存恢复态（会话结束/取消）。
+    fn clear_persisted_session(&self) {
+        *self.recovered_session.lock().unwrap() = None;
+        let _ = std::fs::remove_file(self.cfg.data_dir.join("session_persist.json"));
+    }
+
+    /// P1-1：软件重启后尝试恢复等待中的 6 位码会话。
+    /// 读取 data_dir/session_persist.json → 向 Controller `get_session` 验证仍在等待 →
+    /// 写入 recovered_session（GetStatus.active_session 即可恢复展示）。验证失败/过期
+    /// → 删除本地文件（不残留脏状态）。
+    async fn restore_session(core: Arc<Self>) {
+        let path = core.cfg.data_dir.join("session_persist.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        let session_id = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let code = v.get("code").and_then(|x| x.as_str()).map(String::from);
+        let expires_at = v.get("expires_at").and_then(|x| x.as_str()).map(String::from);
+        let valid_code = code.as_deref().map(valid_code).unwrap_or(false);
+        if session_id.is_empty() || !valid_code {
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        // 向 Controller 验证会话仍存在（等待 joiner 阶段才恢复）。
+        let client = core.controller();
+        match client.get_session(&core.credential(), &session_id) {
+            Ok(view) if view.status == "WAITING" || view.status == "waiting" => {
+                *core.recovered_session.lock().unwrap() = Some(ActiveSession {
+                    session_id: session_id.clone(),
+                    code,
+                    status: "WAITING_FOR_PEER".into(),
+                    expires_at,
+                });
+                tracing::info!(target: "agent", session_id, "活动会话已从上次运行恢复（等待好友加入）");
+            }
+            _ => {
+                // 会话已过期/不存在/已进入连接 → 本地不再恢复。
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 
     fn new_overlay(&self) -> Arc<Mutex<Box<dyn OverlayBackend>>> {
@@ -356,6 +426,8 @@ impl AgentCore {
         self.abort_session_resources();
         // M1-1.5：会话结束/取消即清 session 类 runtime 临时文件。
         self.runtime.clear_session();
+        // P1-1：清除 data_dir 持久化会话与内存恢复态（不再恢复展示）。
+        self.clear_persisted_session();
         // M1-2：会话结束/取消 → 当前路径复位（UI 不再显示 DirectLink / N2N Relay）。
         *self.current_path.lock().unwrap() = String::new();
         if had {
@@ -435,6 +507,13 @@ impl AgentCore {
                 })));
                 // M1-1.5：runtime 临时快照（快速会话创建即落盘，供残留检测/崩溃恢复）。
                 self.runtime.on_session_created(
+                    &view.session_id,
+                    &code,
+                    view.expires_at.as_deref(),
+                    "WAITING_FOR_PEER",
+                );
+                // P1-1：活动会话持久化到 data_dir（软件重启后经 Controller 验证恢复 6 位码）。
+                self.persist_session(
                     &view.session_id,
                     &code,
                     view.expires_at.as_deref(),
@@ -1011,6 +1090,7 @@ impl MeshAgent {
             friend_online: Mutex::new(std::collections::HashMap::new()),
             runtime: RuntimeState::new(cfg.runtime_dir.clone()),
             current_path: Mutex::new(String::new()),
+            recovered_session: Mutex::new(None),
         });
 
         let runtime = Arc::new(
@@ -1338,6 +1418,8 @@ async fn startup(core: Arc<AgentCore>) {
 
     core.ready.store(true, Ordering::Release);
     core.set_state(AgentState::Ready);
+    // P1-1：软件重启后恢复等待中的 6 位码会话（Controller 验证；未过期则 GetStatus 可恢复展示）。
+    AgentCore::restore_session(core.clone()).await;
     // M1-2：拉取 Controller Supernode Registry → 下发 N2N Supernode 池（非阻塞）。
     {
         let client = core.controller();

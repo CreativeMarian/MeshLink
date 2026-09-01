@@ -1,6 +1,45 @@
 # MeshLink Changelog
 
 
+## 客户端正式版架构 + 公网 Controller（2026-09-01）
+
+Changed:
+
+- **正式版禁止客户端自动启动 controller.exe**（Controller 是服务端组件，不是用户电脑
+  组件）：仅 `--local-controller` CLI flag / `MESHLINK_LOCAL_CONTROLLER=1` env（开发模式）
+  放行；普通用户双击 MeshLink.exe 不再每台机器拉起独立 Controller。
+- **Controller 地址优先级**：`MESHLINK_CONTROLLER_URL` env > 用户保存配置 > 默认公网
+  `https://controller.bpbpanel.cc.cd` > 本地（仅开发模式）。`effective_controller_url`
+  恒有值、永不回退 127.0.0.1 / 192.168.x.x；用户保存的地址原样保留为权威配置。
+- **双击 MeshLink.exe 自动拉起 mesh-agent.exe**（最多 3 次重试：先探测管道 → 失败 spawn
+  → 等 15s 未就绪则回收重试）；连接服务失败时首页显示「连接服务启动失败 查看诊断」+ 重连按钮。
+- **子进程隐藏启动**：`spawn_managed` 加 Windows `CREATE_NO_WINDOW`，controller/agent/
+  supernode 不再弹黑框（`--debug` 开发模式保留日志窗口）。
+- **实时连接状态机**：STARTING/CONNECTING/CONNECTED/DISCONNECTED/ERROR；首页顶部显示
+  服务器 + 延迟；3 秒心跳轮询 GetStatus；AGENT_STOPPED / GetStatus 失败 → 显示断开 +
+  「重新连接」按钮 + 自动重连；恢复自动清除断开态。
+- **Session 全局保存**：创建后写入 `data_dir/session_persist.json`（data_dir，非 runtime）；
+  软件重启后 READY 时经 Controller `get_session` 验证未过期 → 恢复 6 位码展示
+  （GetStatus.active_session），过期/失效自动清理；正常退出/取消即清除。
+- **创建/加入流程用户化**：创建页显示「连接服务器: https://…」+ 连接码（不再显示本机
+  局域网地址——公网跨网无意义）；「我的电脑地址」局域网卡从设置页移除。
+- **诊断中心（三层）**：健康状态（连接服务/服务器连接/网络）→ 详细信息（设备ID/当前
+  服务器/延迟/路径）→ 日志查看（分类：全部/连接/网络/错误/Agent/服务端）。
+- **日志系统**：`%LOCALAPPDATA%\MeshLink\logs\` 下 app.log（应用启动）/ agent.log
+  （连接组件）/ controller.log / supernode.log（原始子进程日志）+ connection/network/
+  error 视图（agent.log 按关键词过滤）。Tauri 新增 `read_log_files(category, limit)`。
+- **启动失败自动恢复**：Agent 启动失败自动重试最多 3 次；仍失败显示「连接服务启动失败
+  查看诊断」，不阻塞 UI，可手动重连。
+- 设置页「连接设置」保留创建连接/加入连接二选一；「服务器地址」收进高级设置；普通 UI
+  不暴露 Controller/Agent/端口/监听地址等术语，错误码只进诊断日志。
+
+Added:
+
+- 集成测试/契约测试同步更新：ui_error_contract 第 8 节改为验证「局域网地址卡已移除」
+  （创建/加入模式均不展示我的电脑地址），47 项全 PASS；JS 三测试全 PASS。
+- Agent 侧 `[SESSION CREATE]` 持久化 + `restore_session`（P1-1 重启恢复）。
+
+
 ## Public Controller 架构设计（2026-09-01，设计文档，未大规模编码）
 
 Added:

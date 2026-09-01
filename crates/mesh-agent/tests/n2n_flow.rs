@@ -15,10 +15,16 @@ use mesh_ipc::{Command, Event, PipeClient, Request, ServerMessage};
 use std::io::Read;
 use std::net::Ipv4Addr;
 use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use transport_n2n::{N2NSupernode, SupernodeConfig};
 
 const N2N_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// 三用例各自拉起独立 Controller + Supernode + 双 Agent；DirectLink 打洞在 127.0.0.1
+/// 回环运行，workspace 并行时回环 UDP 打洞资源会互相争用（偶发建链抖动）。
+/// 强制本文件用例串行执行。
+static SERIAL: Mutex<()> = Mutex::new(());
 
 fn tag() -> u64 {
     std::time::SystemTime::now()
@@ -296,6 +302,7 @@ fn spawn_scene(
 
 #[test]
 fn m1_2_agent_force_n2n_path_noise_overlay_ping() {
+    let _serial = SERIAL.lock().unwrap();
     mesh_common::logging::init_logging("info,directlink=debug,agent=debug", false);
 
     let tmp = std::env::var_os("CARGO_TARGET_TMPDIR")
@@ -459,6 +466,7 @@ fn collect_code(ui: &mut PipeClient) -> serde_json::Map<String, serde_json::Valu
 /// 直接链路独立性：Active DirectLink 时杀死 Supernode，Overlay 传输零影响。
 #[test]
 fn m1_2_directlink_independent_of_supernode_kill() {
+    let _serial = SERIAL.lock().unwrap();
     mesh_common::logging::init_logging("info,directlink=debug,agent=debug", false);
 
     let tmp = std::env::var_os("CARGO_TARGET_TMPDIR")
@@ -554,6 +562,7 @@ fn m1_2_directlink_independent_of_supernode_kill() {
 /// Supernode kill → 每 SN 独立熔断 OPEN → restart → HALF_OPEN → CLOSED（Agent 级）。
 #[test]
 fn m1_2_supernode_kill_opens_breaker_and_restart_recovery() {
+    let _serial = SERIAL.lock().unwrap();
     mesh_common::logging::init_logging("info,directlink=debug,agent=debug", false);
 
     let tmp = std::env::var_os("CARGO_TARGET_TMPDIR")

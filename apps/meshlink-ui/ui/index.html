@@ -37,7 +37,17 @@
     <section id="view-home" class="view active">
       <div class="status-line">
         <span id="status-pill" class="dot dot-gray"></span>
-        <span id="status-text" class="status-text">正在连接服务...</span>
+        <div class="status-main">
+          <span id="status-text" class="status-text">正在连接服务...</span>
+          <!-- 综合修复 P0-5：连接成功后显示服务器 + 延迟 -->
+          <div id="conn-meta" class="conn-meta hidden">
+            <span class="conn-meta-label">服务器</span>
+            <span class="mono" id="conn-server">--</span>
+            <span class="conn-meta-label">延迟</span>
+            <span class="mono" id="conn-latency">--</span>
+          </div>
+        </div>
+        <button id="btn-reconnect" class="btn btn-secondary btn-sm hidden">重新连接</button>
       </div>
       <!-- 首次启动无连接配置：明确提示选择创建/加入（用户化，不暴露技术术语） -->
       <div id="home-noconfig" class="ctl-err hidden">
@@ -84,6 +94,8 @@
       <div class="code-display" id="create-code">------</div>
       <p class="countdown">有效时间：<span id="create-countdown">--:--</span></p>
       <p class="waiting-hint">等待好友加入...</p>
+      <!-- 综合修复 P1-2：显示连接服务器（不显示本机局域网地址；公网跨网无意义） -->
+      <p class="server-hint">连接服务器：<span class="mono" id="create-server">--</span></p>
       <div class="action-row">
         <button id="btn-copy-code" class="btn btn-secondary">复制连接码</button>
         <button id="btn-cancel-create" class="btn btn-danger">取消</button>
@@ -162,10 +174,6 @@
         <label><input type="radio" name="ctl-mode" id="mode-remote" value="remote" /> 加入连接</label>
       </div>
       <p id="ctl-mode-hint" class="muted" style="font-size:12px;margin:6px 0 0 0"></p>
-      <div class="info-card" id="ctl-lan-card" style="display:none;margin-top:10px">
-        <div class="info-row"><span class="info-label">我的电脑地址</span><span class="info-value mono" id="ctl-lan-ip">--</span></div>
-        <div class="info-row"><span class="info-label">其他设备可用</span><span class="info-value" id="ctl-lan-note">--</span></div>
-      </div>
       <details class="adv-settings">
         <summary>高级设置</summary>
         <div class="form-row" id="ctl-url-row">
@@ -185,15 +193,54 @@
         <div class="info-row"><span class="info-label">服务器</span><span class="info-value mono" id="ctl-server">--</span></div>
         <div class="info-row"><span class="info-label">我的设备</span><span class="info-value mono" id="ctl-device">--</span></div>
       </div>
+      <!-- 综合修复 P2-1：诊断中心入口（健康/详情/日志三层） -->
+      <div class="action-row" style="margin-top:14px">
+        <button id="btn-diagcenter" class="btn btn-secondary">打开诊断中心</button>
+      </div>
     </section>
 
-    <!-- ============ 高级诊断 ============ -->
+    <!-- ============ 高级诊断（技术详情） ============ -->
     <section id="view-diag" class="view">
       <p class="section-title">高级诊断</p>
       <div id="diag-body" class="diag-body">加载中...</div>
       <div class="action-row">
         <button id="btn-diag-back" class="btn btn-secondary">返回</button>
       </div>
+    </section>
+
+    <!-- ============ 诊断中心（综合修复 P2-1：健康/详情/日志三层） ============ -->
+    <section id="view-diagcenter" class="view">
+      <div class="view-head">
+        <p class="section-title">诊断中心</p>
+        <button id="btn-diagcenter-back" class="btn btn-secondary btn-sm">返回</button>
+      </div>
+      <!-- 第一层：健康状态 -->
+      <div id="dc-health" class="dc-card">
+        <p class="section-title-sm">健康状态</p>
+        <div class="dc-health-row"><span class="info-label">连接服务</span><span class="dc-health-val" id="dc-h-agent">--</span></div>
+        <div class="dc-health-row"><span class="info-label">服务器连接</span><span class="dc-health-val" id="dc-h-ctl">--</span></div>
+        <div class="dc-health-row"><span class="info-label">网络</span><span class="dc-health-val" id="dc-h-net">--</span></div>
+      </div>
+      <!-- 第二层：详细信息 -->
+      <div id="dc-detail" class="dc-card">
+        <p class="section-title-sm">详细信息</p>
+        <div class="dc-health-row"><span class="info-label">设备ID</span><span class="dc-health-val mono" id="dc-device">--</span></div>
+        <div class="dc-health-row"><span class="info-label">当前服务器</span><span class="dc-health-val mono" id="dc-server">--</span></div>
+        <div class="dc-health-row"><span class="info-label">延迟</span><span class="dc-health-val" id="dc-latency">--</span></div>
+        <div class="dc-health-row"><span class="info-label">运行时间</span><span class="dc-health-val" id="dc-uptime">--</span></div>
+        <div class="dc-health-row"><span class="info-label">路径</span><span class="dc-health-val" id="dc-path">--</span></div>
+      </div>
+      <!-- 第三层：日志查看 -->
+      <p class="section-title-sm" style="margin-top:16px">日志查看</p>
+      <div id="dc-log-tabs" class="dc-tabs">
+        <button class="dc-tab active" data-logcat="all">全部</button>
+        <button class="dc-tab" data-logcat="connection">连接</button>
+        <button class="dc-tab" data-logcat="network">网络</button>
+        <button class="dc-tab" data-logcat="error">错误</button>
+        <button class="dc-tab" data-logcat="agent">Agent</button>
+        <button class="dc-tab" data-logcat="controller">服务端</button>
+      </div>
+      <pre id="dc-log-view" class="dc-log">加载中...</pre>
     </section>
 
     <!-- ============ 好友详情（模态）============ -->

@@ -15,10 +15,16 @@ use mesh_agent::{spawn_service, AgentConfig, AgentState, OverlayKind};
 use mesh_ipc::{Command, Event, PipeClient, Request, ServerMessage};
 use std::net::Ipv4Addr;
 use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use transport_n2n::{N2NSupernode, SupernodeConfig};
 
 const N2N_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// 同文件两用例各自拉起独立 Controller + Supernode + 双 Agent，且 DirectLink 打洞在
+/// 127.0.0.1 回环上运行——workspace 并行时两用例会互相争用回环 UDP 打洞资源，偶发
+/// DirectLink 建链失败误触发回退（force 用例被干扰）。强制本文件用例串行执行。
+static SERIAL: Mutex<()> = Mutex::new(());
 
 fn tag() -> u64 {
     std::time::SystemTime::now()
@@ -370,6 +376,7 @@ fn collect_until_connected(
 /// Auto 路径 + DirectLink 失败注入 → 自动回退 N2N → CONNECTED（path=n2n）→ 加密 ping。
 #[test]
 fn m1_2_auto_fallback_n2n_on_directlink_failure() {
+    let _serial = SERIAL.lock().unwrap();
     mesh_common::logging::init_logging("info,directlink=debug,agent=debug,n2n=debug,transport_n2n=debug", false);
 
     let tmp = std::env::var_os("CARGO_TARGET_TMPDIR")
@@ -484,6 +491,7 @@ fn m1_2_auto_fallback_n2n_on_directlink_failure() {
 /// 兼容性：Force N2N（非 Auto）保持原语义；DirectLink 未失败时不回退、仍走 directlink。
 #[test]
 fn m1_2_force_directlink_success_stays_directlink_no_fallback() {
+    let _serial = SERIAL.lock().unwrap();
     mesh_common::logging::init_logging("info,directlink=debug,agent=debug", false);
 
     let tmp = std::env::var_os("CARGO_TARGET_TMPDIR")

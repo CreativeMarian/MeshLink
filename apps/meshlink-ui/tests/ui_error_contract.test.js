@@ -226,8 +226,8 @@ async function withInvoke(rejectValue) {
   const nc2 = els["home-noconfig"];
   check("READY 后未配置提示隐藏", !!(nc2 && nc2.classList.contains("hidden")));
 
-  /* ---------------- 8) 连接模式 UI：创建连接 / 加入连接 ---------------- */
-  console.log("[8] 连接模式：创建连接（local） / 加入连接（remote）切换");
+  /* ---------------- 8) 连接模式 UI：创建连接 / 加入连接（P1-3：不再显示局域网地址卡） ---------------- */
+  console.log("[8] 连接模式：创建连接 / 加入连接切换（已移除「我的电脑地址」显示）");
   // 默认 remote 模式（未配置）。
   const modeLocal = els["mode-local"] || makeEl("mode-local");
   const modeRemote = els["mode-remote"] || makeEl("mode-remote");
@@ -235,13 +235,14 @@ async function withInvoke(rejectValue) {
   api.syncControllerModeUI();
   // sync 会经 getElementById 创建真实元素，需从 els 读回（勿缓存本地对象）。
   const urlRow2 = els["ctl-url-row"] || makeEl("ctl-url-row");
-  const lanCard2 = els["ctl-lan-card"] || makeEl("ctl-lan-card");
   check("加入连接模式显示地址输入框", urlRow2.style.display !== "none");
-  check("加入连接模式隐藏局域网信息卡", lanCard2.style.display === "none");
+  // P1-3：两种模式都不再展示「我的电脑地址」局域网卡（元素不存在或隐藏）。
+  const lanCard = els["ctl-lan-card"];
+  check("不展示局域网地址卡（元素未创建）", lanCard === undefined);
   modeLocal.checked = true; modeRemote.checked = false;
   api.syncControllerModeUI();
-  const lanCard3 = els["ctl-lan-card"] || makeEl("ctl-lan-card");
-  check("创建连接模式显示局域网信息卡", lanCard3.style.display === "block");
+  const urlRow3 = els["ctl-url-row"] || makeEl("ctl-url-row");
+  check("创建连接模式也显示地址输入框", urlRow3.style.display !== "none");
   const hint = els["ctl-mode-hint"] || makeEl("ctl-mode-hint");
   check("创建连接模式提示含发起方说明", (hint.textContent || "").indexOf("发起方") !== -1);
 

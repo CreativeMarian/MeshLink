@@ -13,6 +13,29 @@
 - Fast reconnect optimization
 
 
+## 客户端正式版架构 + 公网 Controller（2026-09-01）
+
+- **正式版默认公网 Controller**：`https://controller.bpbpanel.cc.cd`（用户实测 curl 返回
+  `404 page not found` = 正常，Cloudflare Tunnel/HTTPS/Controller 服务均可用）。普通客户端
+  默认连接该地址；开发模式用 `127.0.0.1:18080`。禁止自动降级/回退到本机地址。
+- **正式版禁止客户端拉起本机 controller.exe**：仅 `--local-controller` / `MESHLINK_LOCAL_CONTROLLER=1`
+  （开发）放行；双机联机必须双方指向同一公网/共享 Controller。
+- **会话重启恢复仅覆盖异常退出**：正常退出/取消时 `teardown_session` 会清除
+  `data_dir/session_persist.json`；只有进程被杀/崩溃时残留文件才会在下次启动 READY 后
+  经 Controller `get_session` 验证恢复。恢复仅还原 6 位码展示（等待态），不自动重建传输链路。
+- **心跳间隔 3 秒**（用户规格 3-5s 取下限）；GetStatus 连续失败 → 断开态 + 自动重连。
+  自动重连只针对 Agent 管道恢复；Controller 不可达由 Agent 事件/`[重新连接]` 兜底。
+- **诊断中心日志分类**：`logs/` 下 app.log / agent.log / controller.log / supernode.log 为
+  原始日志；connection / network / error 为 agent.log 按关键词过滤视图（非独立文件）。
+- **Agent 启动失败自动重试最多 3 次**：仍失败时首页显示「连接服务启动失败 查看诊断」，
+  可手动点「重新连接」；不静默卡死。
+- **默认公网 Controller 对本机无公网入口环境有效**（Cloudflare Tunnel 已在用户侧验证）；
+  若未来公网 Controller 不可达，设置页高级设置可改回局域网/开发地址。
+- 物理双机公网/NAT/P2P 实机流程仍标 `PENDING_REAL_WORLD_VALIDATION`（本环境无第二台物理机）；
+  已用 release_two_machine_smoke + release_gui_smoke（真实 dist 二进制）等价覆盖链路。
+
+
+
 ## Controller 生命周期三模式 + UI 用户化（2026-09-01）
 
 - 三模式落地：LOCAL（创建连接）自动拉起 controller.exe 并监听本机 RFC1918（有私网地址时）

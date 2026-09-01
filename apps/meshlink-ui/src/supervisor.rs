@@ -142,7 +142,15 @@ impl ProcessSupervisor {
     }
 
     /// spawn 并记录所有权（写入 managed_process.json；异常退出后可据此清理）。
+    /// Windows：所有受管理子进程以 CREATE_NO_WINDOW 隐藏启动——用户双击 MeshLink.exe
+    /// 只看到主界面，不弹出 mesh-agent / controller / supernode 的黑窗口（综合修复 P0-4）。
     pub fn spawn_managed(&self, kind: &str, image: &str, cmd: &mut StdCommand) -> Result<Child, String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         let child = cmd.spawn().map_err(|e| format!("spawn {kind}: {e}"))?;
         self.record(kind, image, child.id());
         Ok(child)

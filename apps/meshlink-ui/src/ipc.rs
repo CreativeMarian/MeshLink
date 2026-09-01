@@ -8,6 +8,7 @@
 //!   换 Windows Service 时退化为纯 connect）。
 
 use mesh_ipc::{build_request, Command, Event, PipeClient, Request, Response, ServerMessage, DEFAULT_CONTROLLER_URL, DEFAULT_PIPE_NAME};
+use serde_json::json;
 use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -20,6 +21,11 @@ use crate::supervisor::{ProcessSupervisor, RuntimeDir};
 /// 全局唯一默认 Controller 端口（与 Go DefaultControllerPort / mesh-ipc URL 一致）。
 /// 任何改动需同步三端（Go main.go / mesh-ipc DEFAULT_CONTROLLER_URL / 本常量）。
 const DEFAULT_CONTROLLER_PORT: &str = "18080";
+
+/// 默认公网 Controller（综合修复 P0-2：未配置时不回退本机，而连公网 Controller）。
+/// 用户已实测可用：Cloudflare Tunnel + HTTPS + Controller 服务正常。
+/// 优先级：MESHLINK_CONTROLLER_URL env > 用户保存配置 > 本常量 > 本地（仅 --local-controller）。
+const DEFAULT_PUBLIC_CONTROLLER_URL: &str = "https://controller.bpbpanel.cc.cd";
 
 /// UI → IPC 线程的任务。
 enum IpcJob {
@@ -95,11 +101,10 @@ impl IpcReply {
 
 /// 启动时连接 Agent：先探测已有管道（服务已运行形态），失败则拉起 mesh-agent.exe。
 /// M1-1.5：首次连接前检测并清理 runtime 残留。
-/// Controller 生命周期（用户规格：本机 / 局域网 / 远程三态）：
-/// - 无 Controller 配置 → 不拉起 controller / agent，返回 NOT_CONFIGURED（UI 显示「未配置 Controller」）；
-/// - local（本机）：controller.exe -addr 127.0.0.1:18080（仅本机访问，默认安全）；
-/// - lan（局域网）：controller.exe -addr <RFC1918 私网IP>:18080 -allow-lan-plaintext（共享给局域网其他设备）；
-/// - remote（已有）：绝不自动拉起本机 controller.exe，只连接用户配置的 URL。
+/// 综合修复 P0-1/P0-3：正式版本（无 `--local-controller`）**绝不自动拉起 controller.exe**——
+/// Controller 是服务端组件（公网 Controller），不是用户电脑组件；MeshLink 只负责自动拉起
+/// mesh-agent.exe 并连接生效 Controller。仅开发模式 `--local-controller` 才允许拉起本机
+/// controller（127.0.0.1:18080）用于单机/局域网调试。
 #[tauri::command]
 pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcReply, String> {
     if state.connected.load(Ordering::Acquire) {
@@ -114,8 +119,9 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
         }
     }
 
-    // 生效 Controller 地址：None = 未配置。未配置时不默认连 127.0.0.1、不拉起任何子进程。
+    // 生效 Controller 地址（综合修复 P0-2：永不回退本机；未配置时默认公网 Controller）。
     let Some(controller_url) = effective_controller_url() else {
+        // 理论不可达（effective_controller_url 恒有值）；保留防御。
         return Ok(IpcReply::ok(serde_json::json!({
             "state": "NOT_CONFIGURED",
             "configured": false,
@@ -124,35 +130,75 @@ pub fn agent_connect(app: AppHandle, state: State<'_, IpcState>) -> Result<IpcRe
         })));
     };
 
-    // 本机 / 局域网模式：MeshLink 负责拉起 controller.exe（按模式选择监听方式）。
-    // 远程模式（remote）：只连接已有 Controller，绝不自动拉起本机。
+    // 仅开发模式（--local-controller）且模式为 local/lan 才拉起本机 controller。
+    // 正式版本（默认）任何模式都不拉起本机 controller.exe。
     let mode = controller_mode();
-    let manage_controller = mode == "local" || mode == "lan";
+    let manage_controller = local_controller_enabled() && (mode == "local" || mode == "lan");
     if manage_controller && !controller_healthy(&controller_url) {
         spawn_controller(&state, &mode)?;
     }
 
-    let pipe =
-        std::env::var("MESHLINK_PIPE_NAME").unwrap_or_else(|_| DEFAULT_PIPE_NAME.into());
-
-    let client = match PipeClient::connect(&pipe, Duration::from_millis(1500)) {
-        Ok(c) => c,
-        Err(_) => {
-            let child = spawn_agent_process(&pipe, &state.supervisor.runtime, &controller_url)
-                .map_err(|e| format!("后台服务启动失败：{e}"))?;
-            *state.agent.lock().unwrap() = Some(child);
-            PipeClient::connect(&pipe, Duration::from_secs(15))
-                .map_err(|e| format!("连接后台服务失败：{e}"))?
+    // 自动拉起 mesh-agent（P0-3）：连接失败自动重试最多 3 次（P2-2 自动恢复）。
+    // 每次重试先探测管道（服务可能已被上次 MeshLink 拉起），失败再 spawn。
+    let pipe = std::env::var("MESHLINK_PIPE_NAME").unwrap_or_else(|_| DEFAULT_PIPE_NAME.into());
+    let mut last_err: String = "未知错误".into();
+    let mut client = None;
+    for attempt in 1..=3u32 {
+        match PipeClient::connect(&pipe, Duration::from_millis(1500)) {
+            Ok(c) => {
+                client = Some(c);
+                break;
+            }
+            Err(_) => {
+                // 拉起 agent（幂等：若已运行则 connect 会成功；此处管道不可达才 spawn）。
+                match spawn_agent_process(&pipe, &state.supervisor.runtime, &controller_url) {
+                    Ok(child) => {
+                        *state.agent.lock().unwrap() = Some(child);
+                        match PipeClient::connect(&pipe, Duration::from_secs(15)) {
+                            Ok(c) => {
+                                client = Some(c);
+                                break;
+                            }
+                            Err(e) => {
+                                // spawn 成功但管道未就绪：回收本进程拉起的 agent，下一轮重试。
+                                if let Some(mut ch) = state.agent.lock().unwrap().take() {
+                                    let _ = ch.kill();
+                                    let _ = ch.wait();
+                                }
+                                last_err = format!("后台服务未就绪：{e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        last_err = format!("后台服务启动失败：{e}");
+                    }
+                }
+            }
         }
-    };
+        if attempt < 3 {
+            std::thread::sleep(Duration::from_millis(1000));
+        }
+    }
+    let client = client.ok_or_else(|| format!("{last_err}（已重试 3 次）"))?;
 
     start_ipc_loop(state.inner(), app, client);
-    // M1-2：本机/局域网模式拉起本机 n2n-supernode 并注册到 Controller Supernode Registry
-    // （Agent 持有 credential；UI 不触碰密钥。注册失败不阻断首页 READY）。
+    // M1-2：仅开发模式（本机/局域网 controller）拉起本机 n2n-supernode 并注册到
+    // Controller Supernode Registry（Agent 持有 credential；UI 不触碰密钥）。
+    // 正式版连公网 Controller：Supernode 池由 Controller Registry 下发，不拉起本机 SN。
     if manage_controller {
         let _ = spawn_dev_supernode_and_register(state.inner());
     }
     send_status(&state)
+}
+
+/// 开发模式（--local-controller）：允许 MeshLink 拉起本机 controller.exe（127.0.0.1:18080）。
+/// 判定：命令行 `--local-controller` 或环境变量 `MESHLINK_LOCAL_CONTROLLER=1`（自动化测试注入）。
+fn local_controller_enabled() -> bool {
+    let has_flag = std::env::args().any(|a| a == "--local-controller");
+    let has_env = std::env::var("MESHLINK_LOCAL_CONTROLLER")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    has_flag || has_env
 }
 
 /// 当前 Controller 模式：`local` | `lan` | `remote` | `""`（未配置）。
@@ -168,29 +214,39 @@ fn controller_mode() -> String {
         .unwrap_or_default()
 }
 
-/// 生效 Controller 地址：
-/// - 环境变量 `MESHLINK_CONTROLLER_URL` 最高优先级（测试/运维显式覆盖）；
-/// - 否则读 UI 配置：`local` → 本机（有局域网地址则自动启用局域网访问，否则 127.0.0.1）；
-///   `lan` → http://<本机RFC1918私网IP>:18080；`remote` → 已保存地址；
-/// - 无配置（含旧配置仅 controller_url 无 mode）→ 按已有地址处理；完全无地址 → None（未配置）。
+/// 生效 Controller 地址（综合修复 P0-2 优先级，恒有值、永不回退本机默认）：
+/// 1. 环境变量 `MESHLINK_CONTROLLER_URL` 最高（测试/运维显式覆盖）；
+/// 2. 用户保存配置（controller_url，无论模式——用户填的公网地址必须被尊重）；
+/// 3. 开发模式（--local-controller）：本机/局域网 Controller；
+/// 4. 默认公网 Controller（正式版未配置时连公网，不连 127.0.0.1）。
+/// 禁止：用户设置公网地址后自动回退 127.0.0.1 / 192.168.x.x。
 fn effective_controller_url() -> Option<String> {
+    // 1. 环境变量最高优先。
     if let Ok(url) = std::env::var("MESHLINK_CONTROLLER_URL") {
         let url = url.trim().to_string();
         if !url.is_empty() {
             return Some(url);
         }
     }
-    let cfg = load_ui_config().ok()?;
-    let mode = cfg.get("controller_mode").and_then(|x| x.as_str()).unwrap_or("");
-    let saved = cfg.get("controller_url").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
-    match mode {
-        "local" => Some(local_controller_url()),
-        "lan" => Some(lan_controller_url()),
-        "remote" if !saved.is_empty() => Some(saved),
-        // 旧配置：只有 controller_url、无 controller_mode → 按 remote 处理（不自动拉起本机）。
-        "" if !saved.is_empty() => Some(saved),
-        _ => None, // 未配置 Controller
+    // 2. 用户保存配置（controller_url 为唯一权威地址来源；mode 不再覆盖它）。
+    if let Ok(cfg) = load_ui_config() {
+        let saved = cfg
+            .get("controller_url")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !saved.is_empty() {
+            return Some(saved);
+        }
     }
+    // 3. 开发模式（--local-controller）：本机 / 局域网 Controller。
+    if local_controller_enabled() {
+        let mode = controller_mode();
+        return Some(if mode == "lan" { lan_controller_url() } else { local_controller_url() });
+    }
+    // 4. 默认公网 Controller（正式版兜底）。
+    Some(DEFAULT_PUBLIC_CONTROLLER_URL.to_string())
 }
 
 /// 本机（创建连接/发起方）Controller 地址：有 RFC1918 私网地址则自动启用局域网访问
@@ -258,18 +314,8 @@ fn spawn_controller(state: &IpcState, mode: &str) -> Result<(), String> {
     // 监听地址与参数：local = 本机（有局域网地址自动启用局域网监听）；lan = 显式局域网。
     let (listen_addr, allow_lan, mode_label) = controller_listen_spec(mode);
 
-    let log_path = state
-        .supervisor
-        .runtime
-        .dir
-        .join("controller.log");
-    let _ = state.supervisor.runtime.ensure();
-    let stderr = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map(Stdio::from)
-        .unwrap_or(Stdio::null());
+    // 日志落 logs/controller.log（综合修复 P2-1：分类日志目录）。
+    let stderr = append_log_stderr("controller.log");
     let mut cmd = StdCommand::new(&controller);
     cmd.arg("-addr").arg(&listen_addr);
     if allow_lan {
@@ -277,8 +323,9 @@ fn spawn_controller(state: &IpcState, mode: &str) -> Result<(), String> {
     }
     cmd.stdout(Stdio::null()).stderr(stderr);
 
-    // 用户规格六：[Controller Start] 日志（含模式与监听地址）。
+    // 用户规格六：[Controller Start] 日志（含模式与监听地址；同时写 app.log 供诊断中心）。
     eprintln!("[Controller Start] Mode: {mode_label} Listen: {listen_addr}");
+    append_log("app.log", &format!("[Controller Start] Mode: {mode_label} Listen: {listen_addr}"));
 
     let child = state
         .supervisor
@@ -367,14 +414,7 @@ fn spawn_dev_supernode_and_register(state: &IpcState) -> Result<(), String> {
 
     // 仅当本进程尚未拉起 supernode 时 spawn（重连幂等）。
     if state.supernode.lock().unwrap().is_none() {
-        let log_path = state.supervisor.runtime.dir.join("supernode.log");
-        let _ = state.supervisor.runtime.ensure();
-        let stderr = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map(Stdio::from)
-            .unwrap_or(Stdio::null());
+        let stderr = append_log_stderr("supernode.log");
         let mut cmd = StdCommand::new(&sn);
         cmd.stdout(Stdio::null()).stderr(stderr);
         let child = state
@@ -434,11 +474,12 @@ pub fn ipc_request(
     }
 }
 
-/// 返回全局唯一默认 Controller 地址（单一 Default，源自 mesh-ipc）。
+/// 返回默认 Controller 地址（综合修复 P0-2：正式版默认公网 Controller；
+/// 本地开发默认 127.0.0.1:18080 由 mesh-ipc `DEFAULT_CONTROLLER_URL` 保留为 DEV 锚点）。
 /// 设置页无已保存配置时用它回填输入框——JS 不再各自硬编码。
 #[tauri::command]
 pub fn get_controller_default() -> Result<String, String> {
-    Ok(DEFAULT_CONTROLLER_URL.to_string())
+    Ok(DEFAULT_PUBLIC_CONTROLLER_URL.to_string())
 }
 
 /// 读取 UI 侧普通配置（M1-1：Controller 地址。credential/private key 仍只归 Agent）。
@@ -465,10 +506,12 @@ pub fn load_ui_config() -> Result<serde_json::Value, String> {
 }
 
 /// 保存 Controller 配置到普通配置（设置页；下次启动 spawn 时作为默认值）。
-/// 三种模式（用户规格一/二）：
-/// - `local`（本机/创建连接发起方）：有局域网地址则自动启用局域网监听，否则 127.0.0.1；
-/// - `lan`（局域网）：-addr <本机RFC1918私网IP>:18080 -allow-lan-plaintext（共享给其他设备）；
-/// - `remote`（加入连接/已有地址）：绝不自动拉起本机 controller，只连接已保存地址。
+/// 综合修复 P0-2：`controller_url` 是唯一权威地址来源——用户填写的地址（含公网
+/// https://…）必须原样保存并被 `effective_controller_url` 采纳，**不得**因模式
+/// local/lan 而覆盖成本机/局域网地址（旧 bug：用户设公网地址后回退 127.0.0.1）。
+/// - 用户填地址（任意模式）：校验后保存；
+/// - 用户留空 + 开发模式（--local-controller）local/lan：保存推导的本机/局域网地址；
+/// - 用户留空 + 其他：报错（提示填地址）。
 /// 仅允许合法地址（生产 HTTPS / DEV localhost / RFC1918 私网）；公网明文 HTTP 拒绝。
 #[tauri::command]
 pub fn save_controller_config(mode: String, url: String) -> Result<serde_json::Value, String> {
@@ -476,25 +519,23 @@ pub fn save_controller_config(mode: String, url: String) -> Result<serde_json::V
     if mode != "local" && mode != "lan" && mode != "remote" {
         return Err("Controller 模式必须是 local（本机）、lan（局域网）或 remote（已有地址）。".into());
     }
-    let mut cfg = serde_json::json!({ "controller_mode": mode });
-    match mode.as_str() {
-        "remote" => {
-            let url = url.trim().trim_end_matches('/').to_string();
-            if url.is_empty() {
-                return Err("请输入已有 Controller 地址。".into());
-            }
-            validate_controller_url(&url).map_err(|e| e)?;
-            cfg["controller_url"] = serde_json::json!(url);
+    let url = url.trim().trim_end_matches('/').to_string();
+    let effective = if url.is_empty() {
+        // 留空：创建连接（local/lan）允许空——正式版回退默认公网、dev 模式回退本机；
+        // 加入连接（remote）必须显式填地址。
+        if mode == "local" || mode == "lan" {
+            String::new()
+        } else {
+            return Err("请输入服务器地址（可展开「高级设置」填写 https://…）。".into());
         }
-        "lan" => {
-            // 局域网：地址由本机私网 IP 推导，不落盘用户输入（避免不一致）。
-            cfg["controller_url"] = serde_json::json!(lan_controller_url());
-        }
-        _ => {
-            // local：本机（自动启用局域网访问优先）。
-            cfg["controller_url"] = serde_json::json!(local_controller_url());
-        }
-    }
+    } else {
+        validate_controller_url(&url)?;
+        url
+    };
+    let cfg = serde_json::json!({
+        "controller_mode": mode,
+        "controller_url": effective,
+    });
     let path = ui_config_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -519,7 +560,8 @@ pub fn get_controller_config() -> Result<serde_json::Value, String> {
     let effective = effective_controller_url().unwrap_or_default();
     let lan_ip = detect_lan_ipv4().unwrap_or_default();
     Ok(serde_json::json!({
-        "configured": !effective.is_empty(),
+        // configured = 用户是否显式保存了地址（区别于「默认公网回退」）。
+        "configured": !url.is_empty(),
         "mode": mode,
         "controller_url": url,
         "effective_url": effective,
@@ -566,6 +608,146 @@ fn is_private_host(host: &str) -> bool {
 fn ui_config_path() -> std::path::PathBuf {
     let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
     std::path::Path::new(&base).join("MeshLink").join("ui").join("config.json")
+}
+
+// ---------------------------------------------------------------------------
+// 诊断中心日志（综合修复 P2-1）
+//
+// 分类日志目录：`%LOCALAPPDATA%\MeshLink\logs\`（与 data_dir/runtime 同根）：
+//   app.log          MeshLink 应用生命周期日志（本进程关键动作）
+//   agent.log        mesh-agent 输出（含连接/网络/错误事件行）
+//   controller.log   本机 controller（仅 --local-controller 开发模式）
+//   supernode.log    本机 n2n-supernode（仅 --local-controller 开发模式）
+// connection/network/error 为 agent.log 的分类过滤视图（诊断中心按关键词读取）。
+// ---------------------------------------------------------------------------
+
+fn logs_dir() -> std::path::PathBuf {
+    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
+    std::path::Path::new(&base).join("MeshLink").join("logs")
+}
+
+/// 打开日志文件追加句柄（创建父目录；失败回退 Stdio::null）。
+fn append_log_stderr(name: &str) -> Stdio {
+    let dir = logs_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(name);
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => Stdio::from(f),
+        Err(_) => Stdio::null(),
+    }
+}
+
+/// 向分类日志追加一行（MeshLink 自身关键生命周期事件，诊断中心可见）。
+fn append_log(name: &str, line: &str) {
+    let dir = logs_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    use std::io::Write;
+    let mut f = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(name))
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let _ = writeln!(f, "{line}");
+}
+
+/// 读取分类日志（诊断中心「日志查看」）。返回每个分类最近 `limit` 行。
+/// - `all`：合并 app + agent + controller + supernode（逐文件合并）。
+/// - `agent` / `controller` / `supernode`：对应原始日志。
+/// - `connection` / `network` / `error`：agent.log 按关键词过滤视图。
+#[tauri::command]
+pub fn read_log_files(
+    category: Option<String>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(200).min(2000);
+    let cat = category.unwrap_or_else(|| "all".into());
+    let dir = logs_dir();
+    let _ = std::fs::create_dir_all(&dir);
+
+    let read_last = |name: &str, filter: Option<&[&str]>| -> Vec<String> {
+        let path = dir.join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        let mut lines: Vec<String> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter(|l| match filter {
+                Some(kws) => kws.iter().any(|k| l.to_ascii_lowercase().contains(k)),
+                None => true,
+            })
+            .map(|l| l.to_string())
+            .collect();
+        let skip = lines.len().saturating_sub(limit);
+        lines.drain(..skip);
+        lines
+    };
+
+    let files = [
+        ("app", dir.join("app.log")),
+        ("agent", dir.join("agent.log")),
+        ("controller", dir.join("controller.log")),
+        ("supernode", dir.join("supernode.log")),
+    ];
+
+    let result = match cat.as_str() {
+        "app" => serde_json::json!({ "category": "app", "lines": read_last("app.log", None) }),
+        "agent" => serde_json::json!({ "category": "agent", "lines": read_last("agent.log", None) }),
+        "controller" => serde_json::json!({ "category": "controller", "lines": read_last("controller.log", None) }),
+        "supernode" => serde_json::json!({ "category": "supernode", "lines": read_last("supernode.log", None) }),
+        "connection" => serde_json::json!({
+            "category": "connection",
+            "source": "agent.log",
+            "lines": read_last("agent.log", Some(&["peer", "candidate", "directlink", "n2n", "session", "connected", "disconnect", "punch"])),
+        }),
+        "network" => serde_json::json!({
+            "category": "network",
+            "source": "agent.log",
+            "lines": read_last("agent.log", Some(&["stun", "nat", "udp", "socket", "port", "icmp"])),
+        }),
+        "error" => serde_json::json!({
+            "category": "error",
+            "lines": read_last("agent.log", Some(&["error", "failed", "失败", "timeout", "超时", "unreachable"]))
+                .into_iter()
+                .chain(read_last("app.log", Some(&["error", "失败"])))
+                .collect::<Vec<_>>(),
+        }),
+        "files" => serde_json::json!({
+            "category": "files",
+            "dir": dir.to_string_lossy(),
+            "files": files.iter().filter(|(_, p)| p.exists()).map(|(n, p)| json!({
+                "name": n,
+                "size": std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
+            })).collect::<Vec<_>>(),
+        }),
+        _ => {
+            // all：合并四个原始日志（文件存在才合并）。
+            let mut lines: Vec<String> = Vec::new();
+            for (tag, path) in &files {
+                if path.exists() {
+                    if let Ok(text) = std::fs::read_to_string(path) {
+                        for l in text.lines().filter(|l| !l.trim().is_empty()) {
+                            lines.push(format!("[{tag}] {l}"));
+                        }
+                    }
+                }
+            }
+            let skip = lines.len().saturating_sub(limit);
+            lines.drain(..skip);
+            serde_json::json!({ "category": "all", "lines": lines })
+        }
+    };
+
+    Ok(result)
 }
 
 /// UI 退出时有序回收（M1-1.5 规格二）：
@@ -651,15 +833,9 @@ fn spawn_agent_process(pipe: &str, runtime: &RuntimeDir, controller_url: &str) -
     // M1-1.5：runtime 目录（supervisor 与 agent 共用；agent 写临时文件，supervisor 删整个目录）。
     let runtime_dir = runtime.dir.to_string_lossy().into_owned();
 
-    // Agent 日志落 data_dir（无控制台窗口时的唯一诊断来源）。
-    let log_path = std::path::Path::new(&data_dir).join("agent.log");
-    let _ = std::fs::create_dir_all(&data_dir);
-    let stderr = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map(Stdio::from)
-        .unwrap_or(Stdio::null());
+    // Agent 日志落 logs/agent.log（综合修复 P2-1：分类日志目录；无控制台窗口时的诊断来源）。
+    let stderr = append_log_stderr("agent.log");
+    append_log("app.log", &format!("[MeshLink] 启动 mesh-agent：controller={controller_url} pipe={pipe}"));
 
     let mut cmd = StdCommand::new(&agent);
     cmd.env("MESHLINK_CONTROLLER_URL", controller)
