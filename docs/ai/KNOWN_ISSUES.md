@@ -17,6 +17,25 @@
   force_path）。核心已就绪（commit 3756b69，10/10 单测），待下一步接入。
 
 
+## 排障实录 2026-09-02：双机「正在寻找设备」+ 主机连不上（commit 51b387a）
+
+- **客户机「正在寻找设备」根因（配置残留，非代码）**：客户机 agent 实际连接的是
+  `127.0.0.1:18080`（本机 Controller 地址），而非公网 `https://controller.bpbpanel.cc.cd`。
+  客户机无 controller.exe 在跑 → healthz 30s 未就绪 → CONTROLLER_UNREACHABLE → 无法
+  join_session → UI 永远卡第 1 步。来源是客户机 config.json 里保存的 controller_url
+  曾为本机地址（或环境变量 MESHLINK_CONTROLLER_URL）。**修复动作**：客户机设置页把
+  Controller 地址改回公网；或删除 config.json 的 controller_url 让默认公网生效；同时
+  关掉任何手动启动的旧 mesh-agent 控制台（不带参数会默认连 127.0.0.1:18080）。
+- **主机连不上根因（代码已修 commit 51b387a）**：Clash 等代理软件关闭后 Windows 系统
+  代理残留（注册表 ProxyEnable=1 / ProxyServer=127.0.0.1:7897），controller-client 每次
+  请求都先连死代理 → ConnectionRefused → 所有 Controller 请求失败。已修复：**代理不可用
+  自动回退直连 + 60s 冷却**（连接代理/CONNECT 失败即标记冷却，冷却期内跳过代理直接连
+  目标，冷却后自动重新探测代理）。验证：controller-client 17/17 PASS（新增
+  proxy_dead_falls_back_to_direct），cargo check --workspace 干净，mesh-agent lib 11/11。
+- **说明**：用户环境若必须走代理才能连公网 Controller，首次回退直连失败后 60s 内会
+  保持直连；用户重新开启代理软件后最多 60s 自动切回代理。
+
+
 ## Phase1 逻辑审查优化：P0-1 同步调用隔离 + P1-4 失败自动恢复（2026-09-02，commit 8cbf219）
 
 - **P0-1 已修（运行时饿死）**：22 处同步 Controller 调用（healthz/register_device/
