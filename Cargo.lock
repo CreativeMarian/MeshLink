@@ -500,6 +500,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "tracing",
  "winreg 0.52.0",
 ]
 
