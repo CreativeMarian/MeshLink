@@ -234,9 +234,10 @@ func OpenWithOverlayPool(dsn string, poolCidr string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	isMemory := dsn == ":memory:" // P2-4：内存库跳过磁盘文件完整性校验
 	// 单写连接：modernc/sqlite 并发写会 BUSY，靠 busy_timeout + 串行写事务；
 	// 读并发不受限。文件库开启 WAL 提高读写并发。
-	if dsn != ":memory:" {
+	if !isMemory {
 		dsn = "file:" + dsn + "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 	} else {
 		dsn = "file::memory:?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
@@ -246,7 +247,7 @@ func OpenWithOverlayPool(dsn string, poolCidr string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	// 内存库必须在同一连接上建表（多连接 = 多个独立内存库）。
-	if strings.Contains(dsn, ":memory:") {
+	if isMemory {
 		db.SetMaxOpenConns(1)
 	}
 	if _, err := db.Exec(schema); err != nil {
@@ -261,6 +262,16 @@ func OpenWithOverlayPool(dsn string, poolCidr string) (*Store, error) {
 	if err := migrateColumns(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate columns: %w", err)
+	}
+	// P2-4：启动完整性校验——controller.db 损坏/被截断时（历史 502/controller 反复
+	// 退出期间可能产生），sqlite 懒连接可能静默重建空库，导致设备身份/会话数据"凭空
+	// 消失"。quick_check 快速校验，损坏则明确报错（含 db 路径），不再静默吞掉。
+	if !isMemory {
+		var check string
+		if err := db.QueryRow("PRAGMA quick_check").Scan(&check); err != nil || check != "ok" {
+			db.Close()
+			return nil, fmt.Errorf("controller.db 完整性校验失败（文件损坏?）: check=%q path=%s", check, dsn)
+		}
 	}
 	return &Store{db: db, overlay: pool}, nil
 }

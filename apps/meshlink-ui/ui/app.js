@@ -54,6 +54,8 @@ const S = {
   controllerUrl: "",
   controllerCfg: {},   // 连接配置（mode / lan_ip / effective_url，供设置页展示）
   ctlErr: false,      // 网络服务不可达横幅可见性（事件驱动 + poll 兜底）
+  // P2-1：GetStatus 连续失败计数（≥3 即约 9s 才判定 Agent 断开，防单次偶发超时误报）。
+  statusFailStreak: 0,
   // 综合修复 P0-5：全局连接状态机（STARTING / CONNECTING / CONNECTED / DISCONNECTED / ERROR）。
   connState: "STARTING",
   connMeta: { server: "", latency: "" }, // 首页顶部：服务器 + 延迟
@@ -658,6 +660,7 @@ async function heartbeat() {
   if (r && r.ok && r.data) {
     const snap = r.data;
     const wasConnected = S.connState === "CONNECTED";
+    S.statusFailStreak = 0; // P2-1：成功即清零连续失败计数
     renderStatus(snap);
     // Connected 事件丢失兜底：状态刚进入 CONNECTED 时补齐连接详情视图（不打扰后续浏览）。
     if (snap.state === "CONNECTED" && !wasConnected) syncConnectedView(snap);
@@ -673,11 +676,16 @@ async function heartbeat() {
       loadControllerStatus();
     }
   } else {
-    // GetStatus 失败 → Agent 管道断开 → 断开态 + 自动重试（单例 ensure_agent_running）。
-    setConnState("DISCONNECTED");
-    showReconnect();
-    renderStatus({ state: "FAILED", user_facing: "连接服务启动失败" });
-    autoRetryAgent();
+    // P2-1：GetStatus 失败先累积计数，连续 ≥3 次（约 9s）才判定 Agent 断开——
+    // 单次偶发超时（agent 忙于建链/Controller 慢）不误报「连接服务启动失败」，
+    // 也不误触发 autoRetryAgent 反复拉起。成功任意一次即清零。
+    S.statusFailStreak = (S.statusFailStreak || 0) + 1;
+    if (S.statusFailStreak >= 3) {
+      setConnState("DISCONNECTED");
+      showReconnect();
+      renderStatus({ state: "FAILED", user_facing: "连接服务启动失败" });
+      autoRetryAgent();
+    }
   }
 }
 

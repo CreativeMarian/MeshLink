@@ -223,7 +223,7 @@ impl PipeServerHandle {
 }
 
 /// 连接注册表：conn_id → 该连接的写端（事件广播目标）。
-type ClientRegistry = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Vec<u8>>>>>;
+type ClientRegistry = Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<Vec<u8>>>>>;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const INSTANCE_COUNT: usize = 4;
@@ -265,7 +265,10 @@ pub fn spawn_server(
                         {
                             let reg = registry.lock().unwrap();
                             for (id, tx) in reg.iter() {
-                                if tx.send(line.clone()).is_err() {
+                                // P2-3：try_send 非阻塞——unbounded send 会逐条阻塞广播线程，
+                                // 慢客户端读不动时拖累全体。有界队列满（TrySendError::Full）
+                                // 或已断开（Disconnected）都判 dead 移除，防内存膨胀。
+                                if tx.try_send(line.clone()).is_err() {
                                     dead.push(*id);
                                 }
                             }
@@ -376,7 +379,9 @@ fn serve_connection(
     next_id: &AtomicU64,
 ) {
     let conn_id = next_id.fetch_add(1, Ordering::Relaxed);
-    let (tx_out, rx_out) = std::sync::mpsc::channel::<Vec<u8>>();
+    // P2-3：连接写出通道有界化（原 unbounded 广播队列：慢客户端读得慢时事件无限堆积，
+    // 内存膨胀）。512 容量 + 广播 try_send：慢客户端被判定 dead 断开，健康客户端不受影响。
+    let (tx_out, rx_out) = std::sync::mpsc::sync_channel::<Vec<u8>>(512);
     registry.lock().unwrap().insert(conn_id, tx_out.clone());
 
     // 写线程：recv 超时轮询 + stopped 检查（读循环结束后通道 Disconnected

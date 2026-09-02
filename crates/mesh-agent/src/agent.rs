@@ -1663,6 +1663,10 @@ async fn reconnect_controller(core: Arc<AgentCore>) -> bool {
 async fn background_loop(core: Arc<AgentCore>) {
     let mut heartbeat_tick: u32 = 0;
     let mut presence_tick: u32 = 0;
+    // P2-2：事件轮询动态背压——空轮询退避（2s→4s→8s→10s，上限 5 tick），有事件
+    // 或失败恢复 1 tick。减少空闲期对 Controller 的无意义轮询频率（省流量/负载）。
+    let mut poll_tick: u32 = 0;
+    let mut poll_interval: u32 = 1;
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
         if !core.ready.load(Ordering::Acquire) {
@@ -1692,19 +1696,31 @@ async fn background_loop(core: Arc<AgentCore>) {
             let _ = AgentCore::controller_call(move || client.presence_heartbeat(&cred)).await;
         }
 
-        // 事件轮询（friends/connection_request 等）。
-        let client = core.controller();
-        let cred = core.credential();
-        let since = *core.poll_seq.lock().unwrap();
-        match AgentCore::controller_call(move || client.poll_events(&cred, since)).await {
-            Ok(poll) => {
-                *core.poll_seq.lock().unwrap() = poll.seq;
-                for ev in poll.events {
-                    forward_controller_event(&core, &ev);
+        // 事件轮询（friends/connection_request 等），按动态间隔执行。
+        poll_tick += 1;
+        if poll_tick >= poll_interval {
+            poll_tick = 0;
+            let client = core.controller();
+            let cred = core.credential();
+            let since = *core.poll_seq.lock().unwrap();
+            match AgentCore::controller_call(move || client.poll_events(&cred, since)).await {
+                Ok(poll) => {
+                    *core.poll_seq.lock().unwrap() = poll.seq;
+                    if poll.events.is_empty() {
+                        // P2-2：空轮询 → 指数退避（1→2→4→5 tick 封顶）。
+                        poll_interval = (poll_interval * 2).min(5);
+                    } else {
+                        poll_interval = 1;
+                        for ev in poll.events {
+                            forward_controller_event(&core, &ev);
+                        }
+                    }
                 }
-            }
-            Err(e) => {
-                tracing::warn!(target: "agent", error = %e, "事件轮询失败");
+                Err(e) => {
+                    // P2-2：失败恢复积极轮询（可能丢事件，缩短间隔尽快追上）。
+                    poll_interval = 1;
+                    tracing::warn!(target: "agent", error = %e, "事件轮询失败");
+                }
             }
         }
 
