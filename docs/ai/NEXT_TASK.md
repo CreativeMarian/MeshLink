@@ -3,26 +3,23 @@
 
 ## Current Milestone
 
-Phase2 逻辑审查优化（P1-2 watchdog / P1-3 transport 清理）→ 打包双机复测 → M1-3 Path Manager
+打包最新 dist + 双机复测（验证 UI 已连接展示 / 失败自动恢复）→ 后续审查项 P2-1~P2-4 → M1-3 Path Manager
 
 
-## 当前焦点（Phase2：P1-2 / P1-3）
+## 当前焦点（打包 + 双机复测）
 
-- Phase1（commit 8cbf219）已完成：P0-1 同步 Controller 调用全 offload（spawn_blocking，
-  根治 2-worker runtime 饿死）+ P1-4 失败后自动回 READY（3s 展示真实原因）。全部相关
-  测试 PASS。
-- **Phase2 待实施**：
-  1. **P1-2**：`finish_connected` watchdog `loop { sleep 500ms; 打日志 }` 不查 stop
-     标志、永不退出 → 每次连接泄漏一个空转任务 + 刷屏。加退出条件（stop 标志 / 会话
-     结束 / 连接断开）。
-  2. **P1-3**：`abort_session_resources` 只拆 overlay+置 stop，不调
-     transport.stop_keepalive / 清 Noise 状态；`spawn_stun_refresh` /
-     `spawn_reverse_probe` 线程无会话级退出 → 多次会话后线程残留。加会话级退出 + 清理。
-- Phase2 完成后：cargo build + cargo test + commit+push + 更新 docs/ai 四份文档。
-- 随后**重新打包 dist + 双机复测**（新包）：验证 ① 首页/连接码页/加入进度页在底层
-  Connected 后正确展示已连接（不再卡"正在寻找设备"/"等待好友加入"）；② 会话失败后
-  UI 显示真实原因并在 ~3s 后自动回可操作状态。前提：两台都用新包、虚拟机无残留手动旧
-  mesh-agent、虚拟机 config 无旧 LAN 残留。
+- Phase1（commit 8cbf219：P0-1 同步调用 offload + P1-4 失败自动恢复）与 Phase2
+  （commit a8842b2：P1-2 watchdog 退出 + P1-3 keepalive 清理）均已完成并推送，
+  相关测试全 PASS。
+- **下一步：重新打包 dist + 双机复测**（用最新代码编译 MeshLink.exe / mesh-agent.exe /
+  controller.exe 后打包，覆盖虚拟机）：
+  1. 首页/连接码页/加入进度页在底层 Connected 后正确展示已连接（不再卡「正在寻找设备」/
+     「等待好友加入」）；
+  2. 会话失败后 UI 显示真实原因并在 ~3s 后自动回可操作状态（P1-4）；
+  3. 长时间运行 / 多次会话后无卡顿、无 watchdog 刷屏、无 keepalive 线程残留（P1-2/P1-3）。
+  前提：两台都用新包、虚拟机无残留手动旧 mesh-agent、虚拟机 config 无旧 LAN 残留。
+- 之后可做 P2-1~P2-4（低优先）：heartbeat 连续失败才切换 / 事件轮询背压 /
+  广播 channel 限流 / controller.db 空库校验。
 
 ## M1-3 Path Manager（后续）
 

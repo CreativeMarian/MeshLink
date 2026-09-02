@@ -95,6 +95,14 @@ v0.1.0
     mvp_gate / friend_flow / n2n_flow(3) / service_identity / session_lifecycle /
     recent_connection_test 全 PASS。
 
+[x] Phase2 逻辑审查优化（commit a8842b2）：
+    P1-2：finish_connected 诊断 watchdog `loop { sleep 500ms; 打日志 }` 原不查 stop
+    标志、永不退出（每次连接泄漏空转任务 + 每 2s 刷日志）；加 stop 检查退出。
+    P1-3：abort_session_resources 原只拆 overlay+置 stop，不调 transport.stop_keepalive
+    （keepalive 线程继续刷新 NAT 映射发包直至 transport drop）；补 stop_keepalive
+    （Keepalive::Drop 置 stop + join 线程）清理 DirectLink/N2N peer keepalive。
+    验证：cargo check 干净、lib 11 / friend_flow / n2n_flow(--test-threads=1, 3) 全 PASS。
+
 
 ## Current Development
 

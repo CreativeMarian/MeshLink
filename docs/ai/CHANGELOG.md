@@ -1,6 +1,29 @@
 # MeshLink Changelog
 
 
+## Phase2 逻辑审查优化：P1-2 watchdog 退出 + P1-3 keepalive 清理（2026-09-02，commit a8842b2）
+
+Fixed:
+
+- **P1-2 watchdog 泄漏/刷屏**：`finish_connected` 的诊断 watchdog
+  `loop { sleep 500ms; n++; if n<=4 || n%4==0 { 打日志 } }` 原**不查 stop 标志、永不
+  退出**——每次连接泄漏一个空转任务 + 每 2s 刷一条「watchdog: runtime 调度心跳」。
+  修复：每轮先查 `stop.load()`，会话结束即 break 退出，不再泄漏/刷屏。
+- **P1-3 keepalive 线程残留**：`abort_session_resources` 原只拆 Overlay + 置 stop，
+  **不调 transport.stop_keepalive**——会话结束后 DirectLink/N2N 的 keepalive 线程仍
+  继续每 15s 刷新 NAT 映射发包，直至 transport drop（dispatcher_stop）。修复：abort
+  时对 `s.peer.peer_id` 调用 `transport.stop_keepalive` + `n2n.stop_keepalive`
+  （Keepalive::Drop 置 stop 标志并 join 线程），会话结束即停止保活线程。
+
+Verified:
+
+- `cargo check` 干净（无新增 warning）；mesh-agent lib 11 / friend_flow /
+  n2n_flow(--test-threads=1, 3) 全 PASS。
+- 注：n2n_flow 默认并行跑时偶发 `N2NSupernode::bind` 端口竞态（free_port TCP 探测 →
+  UDP bind 的 TOCTOU，SERIAL 锁 poisoned 连锁），`--test-threads=1` / 单测 / 顺序跑
+  全 PASS；属测试基建已知抖动，非产品逻辑。
+
+
 ## Phase1 逻辑审查优化：P0-1 同步调用隔离 + P1-4 失败自动恢复（2026-09-02，commit 8cbf219）
 
 Fixed:
