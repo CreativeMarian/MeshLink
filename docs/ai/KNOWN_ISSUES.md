@@ -13,6 +13,30 @@
 - Fast reconnect optimization
 
 
+## Phase1 逻辑审查优化：P0-1 同步调用隔离 + P1-4 失败自动恢复（2026-09-02，commit 8cbf219）
+
+- **P0-1 已修（运行时饿死）**：22 处同步 Controller 调用（healthz/register_device/
+  list_supernodes/poll_events/create_session/get_session/presence_heartbeat/
+  list_friendships/upsert_recent_connection/join_session/get_candidates/put_candidates/
+  reject_connection_request/register_supernode）全部改 `spawn_blocking` offload，根治
+  2-worker Tokio runtime 被同步裸 TCP（8s 超时）阻塞导致的卡顿/心跳饿死。
+- **P1-4 已修（失败自动恢复）**：会话失败后 3s 自动回 READY（仅已就绪后的会话失败；
+  启动失败保持 Failed 由 ensure_agent_running 冷却重试）。UI 会在 Error 事件展示真实
+  原因，随后 Disconnected 事件回到可操作状态。
+- **Phase2 待做（已排期）**：
+  - P1-2：`finish_connected` watchdog `loop { sleep 500ms; 打日志 }` 不查 stop 标志、
+    永不退出，每次连接泄漏一个空转任务 + 刷屏 → 需加退出条件。
+  - P1-3：`abort_session_resources` 只拆 overlay+置 stop，不调 transport.stop_keepalive /
+    清 Noise 状态；spawn_stun_refresh / spawn_reverse_probe 线程无会话级退出 → 多次会话
+    后线程残留。
+- **测试基建抖动（非产品逻辑）**：n2n_flow 偶发 0.00s 端口竞态（free_port TOCTOU），
+  单测/顺序跑全 PASS；default_port_alignment 需 18080 空闲（本机被运行中 controller
+  占用，停止后复跑）。
+- **遗留**：auto_fallback_n2n 集成测试仍失败（N2N 双 SN 熔断时序，被真实双机公网
+  DirectLink 验证覆盖）；dist 打包前需关闭运行中的 MeshLink.exe；controller.exe 反复
+  消失根因未根治（用户将自写 vbs 自启动）。
+
+
 ## 双机公网 DirectLink 连通 + UI 流程顶走/事件丢失修复（2026-09-02）
 
 - **真实双机公网验证通过（原 PENDING_REAL_WORLD_VALIDATION 已达成）**：主机

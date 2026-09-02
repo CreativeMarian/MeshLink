@@ -79,6 +79,22 @@ v0.1.0
     boot/waitReady/heartbeat 三处调用）。系统性 UI 排查：全部按钮绑定完整、Tauri 9 个
     command 对应完整、ActiveSession.status（SCREAMING_SNAKE）与 UI 匹配无误。
 
+[x] UI 启动冻结修复（commit ddee880）：
+    boot() 中 startStatusPoll() 原在 listen() 之后，listen 抛异常中断 boot → 心跳永不
+    启动 → UI 永远停在初始态（已修复：startStatusPoll 前置 + 两个 listen 各自 try/catch +
+    boot_heartbeat_contract.test.js 8 项全 PASS）。
+
+[x] 全项目逻辑审查 + Phase1 优化（commit 8cbf219）：
+    审查定位两类问题并修复——P0-1：agent.rs 2-worker Tokio runtime 被 controller-client
+    同步裸 TCP 阻塞（IO_TIMEOUT=8s，startup/background_loop/handle_command/finish_connected
+    全同步调用），Controller 慢时阻塞 worker 8s、其它 async 任务饿死 → 卡顿/心跳延迟；
+    22 处同步 Controller 调用全部改 `AgentCore::controller_call`（spawn_blocking offload），
+    refresh_presence 转 async。P1-4：fail() 置 Failed 后卡死需手动重连；新增 failed_at +
+    background_loop 自动恢复（3s 展示真实原因后回 READY，仅已就绪的会话失败恢复，启动失败
+    保持 Failed 由 ensure_agent_running 冷却重试）。验证：cargo check 干净、lib 11 /
+    mvp_gate / friend_flow / n2n_flow(3) / service_identity / session_lifecycle /
+    recent_connection_test 全 PASS。
+
 
 ## Current Development
 

@@ -3,20 +3,26 @@
 
 ## Current Milestone
 
-双机公网连接收尾（UI 修复验证 + 公网 P2P 全流程复测）→ M1-3 Path Manager
+Phase2 逻辑审查优化（P1-2 watchdog / P1-3 transport 清理）→ 打包双机复测 → M1-3 Path Manager
 
 
-## 当前焦点（双机公网连接 UI 收尾）
+## 当前焦点（Phase2：P1-2 / P1-3）
 
-- 底层公网 DirectLink 已打通（commit 8c4fa49 前已验证：code=721984、主机 10.88.0.1 /
-  虚拟机 10.88.0.2、双方 Connected）。下一轮用**最新 dist 包**（SHA256 F5052F7E...）
-  双机复测，确认：
-  1. 创建方连接码页不被 PeerFound/Punching/NoiseHandshaking 顶走；
-  2. 切页再切回仍能看到连接码（active_session 恢复）；
-  3. 连接成功 UI 一定切到「已连接」详情页（Connected 事件 + syncConnectedView 兜底）；
-  4. 两台机器都必须用新 MeshLink.exe + mesh-agent.exe（版本一致）。
-- 双机复测通过后，再验证：Overlay 虚拟 IP ping（10.88.0.1 ↔ 10.88.0.2）与真实数据面。
-- 主机 Controller 需保持存活（用户自写 vbs 自启动）；公网 Controller 可达性前置检查。
+- Phase1（commit 8cbf219）已完成：P0-1 同步 Controller 调用全 offload（spawn_blocking，
+  根治 2-worker runtime 饿死）+ P1-4 失败后自动回 READY（3s 展示真实原因）。全部相关
+  测试 PASS。
+- **Phase2 待实施**：
+  1. **P1-2**：`finish_connected` watchdog `loop { sleep 500ms; 打日志 }` 不查 stop
+     标志、永不退出 → 每次连接泄漏一个空转任务 + 刷屏。加退出条件（stop 标志 / 会话
+     结束 / 连接断开）。
+  2. **P1-3**：`abort_session_resources` 只拆 overlay+置 stop，不调
+     transport.stop_keepalive / 清 Noise 状态；`spawn_stun_refresh` /
+     `spawn_reverse_probe` 线程无会话级退出 → 多次会话后线程残留。加会话级退出 + 清理。
+- Phase2 完成后：cargo build + cargo test + commit+push + 更新 docs/ai 四份文档。
+- 随后**重新打包 dist + 双机复测**（新包）：验证 ① 首页/连接码页/加入进度页在底层
+  Connected 后正确展示已连接（不再卡"正在寻找设备"/"等待好友加入"）；② 会话失败后
+  UI 显示真实原因并在 ~3s 后自动回可操作状态。前提：两台都用新包、虚拟机无残留手动旧
+  mesh-agent、虚拟机 config 无旧 LAN 残留。
 
 ## M1-3 Path Manager（后续）
 

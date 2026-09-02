@@ -1,6 +1,47 @@
 # MeshLink Changelog
 
 
+## Phase1 逻辑审查优化：P0-1 同步调用隔离 + P1-4 失败自动恢复（2026-09-02，commit 8cbf219）
+
+Fixed:
+
+- **P0-1 运行时饿死（架构级）**：agent.rs Tokio runtime 仅 `worker_threads(2)`，而
+  controller-client 为**同步裸 TCP**（IO_TIMEOUT=8s）。`startup` / `background_loop`
+  （每 2s `poll_events`）/ `handle_command` / `finish_connected` 全同步调用 Controller，
+  Controller 慢时一次最多阻塞 worker 8s，其它 async 任务（心跳、IPC、会话流程）可能
+  饿死 → 卡顿 / 心跳延迟。修复：新增 `AgentCore::controller_call`（`spawn_blocking`
+  包装，`tokio::task::spawn_blocking(f).await`），22 处同步 Controller 调用
+  （healthz / register_device / list_supernodes / poll_events / create_session /
+  get_session / presence_heartbeat / list_friendships / upsert_recent_connection /
+  join_session / get_candidates / put_candidates / reject_connection_request /
+  register_supernode）全部 offload；`refresh_presence` 转 async fn。
+- **P1-4 会话失败后自动恢复**：`fail()` 置 Failed 后原需手动重连；新增 `failed_at`
+  时间戳 + `background_loop` 自动恢复（失败展示 3s 后若仍 Failed 且无活动会话 →
+  自动回 READY 并发 Disconnected 事件让 UI 回到可操作状态）。仅**已就绪后的会话
+  失败**恢复；启动阶段失败（Controller 不可达等）保持 Failed，由
+  `ensure_agent_running` 冷却重试。`set_state(Ready)` 清空 failed_at。
+
+Verified:
+
+- `cargo check` 干净（无新增 warning）；mesh-agent lib 11 测试 / mvp_gate / friend_flow /
+  n2n_flow(3) / service_identity / session_lifecycle_test / recent_connection_test 全 PASS。
+- `default_port_alignment` 因本机 18080 被运行中 controller（PID 17076）占用未跑（环境
+  冲突，非回归；停止 controller 后可复跑）。n2n_flow 偶发 0.00s 端口竞态为测试基建
+  free_port TOCTOU 已知抖动（单测/顺序跑全 PASS）。
+
+
+## UI 启动冻结修复（2026-09-02，commit ddee880，补记）
+
+Fixed:
+
+- **boot 被 listen 异常中断 → 心跳永不启动**：`boot()` 中 `startStatusPoll()` 原在
+  `listen()` 之后；`listen()` 抛异常会中断 boot，导致心跳轮询从未启动，UI 永远停在
+  初始状态（「正在连接服务...」）。修复：`startStatusPoll()` 前置 + 两个 `listen()`
+  各自 try/catch 包裹。
+- 新增 `apps/meshlink-ui/tests/boot_heartbeat_contract.test.js`（8 项）覆盖：boot
+  异常时心跳仍启动、listen 失败不中断启动流程。
+
+
 ## 双机公网 DirectLink 连通 + UI 流程顶走/事件丢失修复（2026-09-02，commit 8c4fa49）
 
 Fixed:
