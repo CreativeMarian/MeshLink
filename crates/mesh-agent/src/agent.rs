@@ -475,11 +475,17 @@ impl AgentCore {
         })
     }
 
-    /// 停泵 + 拆 Overlay（会话状态本身由调用方处理）。
+    /// 停泵 + 拆 Overlay + 停 peer keepalive（会话状态本身由调用方处理）。
     fn abort_session_resources(&self) {
         let mut guard = self.session.lock().unwrap();
         if let Some(s) = guard.take() {
             s.stop.store(true, Ordering::Release);
+            // P1-3：停掉该 peer 的 keepalive 线程（Keepalive::Drop 置 stop + join），
+            // 避免会话结束后 keepalive 继续刷新 NAT 映射/发包（线程残留、日志刷屏）。
+            if !s.peer.peer_id.0.is_empty() {
+                self.transport.stop_keepalive(&s.peer.peer_id);
+                self.n2n.stop_keepalive(&s.peer.peer_id);
+            }
             if let Err(e) = s.overlay.lock().unwrap().teardown() {
                 tracing::warn!(target: "agent", "Overlay 拆除失败: {e}");
             }
@@ -2458,11 +2464,15 @@ async fn finish_connected(
     // 诊断 watchdog：验证 runtime 调度是否仍在推进（区分“任务冻结”与“runtime 卡死”）。
     {
         let smoke_ok = smoke_ok.clone();
+        let stop = stop.clone();
         let tag = core.tag.clone();
         tokio::spawn(async move {
             let mut n = 0u32;
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                if stop.load(Ordering::Acquire) {
+                    break; // P1-2：会话已结束，watchdog 退出，不泄漏空转任务。
+                }
                 n += 1;
                 if n <= 4 || n % 4 == 0 {
                     tracing::info!(
