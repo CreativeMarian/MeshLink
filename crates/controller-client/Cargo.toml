@@ -7,6 +7,7 @@ edition.workspace = true
 mesh-common.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 # PRODUCTION 传输：https:// 直连（TLS 由 rustls + 系统根/固定 CA；Cloudflare
 # Tunnel 场景客户端仍标准 https，不感知 Tunnel 存在）
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 const USER_AGENT: &str = "meshlink-controller-client/0.1";
 const IO_TIMEOUT: Duration = Duration::from_secs(8);
@@ -313,7 +315,15 @@ pub struct Client {
     /// HTTPS 代理（HTTP CONNECT 隧道）。环境变量/Windows 系统代理解析；
     /// 代理只用于 https（公网 Controller）——DEV 明文回环不走代理。
     proxy: Option<ProxyConfig>,
+    /// 代理不可用冷却：代理连接/CONNECT 失败后标记，冷却期内跳过代理直接直连
+    /// （用户关闭代理软件/系统代理残留时，避免每次请求都先等 8s 超时）。
+    /// Arc<Mutex> 保持 Client 仍可 Clone（多线程共享同一冷却状态）。
+    proxy_dead_until: Arc<Mutex<Option<Instant>>>,
 }
+
+/// 代理标记不可用后的直连冷却时长：此期间内跳过代理直接连目标；
+/// 冷却结束后自动重新探测代理（用户重新开启代理软件后可平滑切回）。
+const PROXY_DEAD_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// HTTP 代理配置（仅支持 HTTP/HTTPS CONNECT 隧道；socks 不支持）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,7 +398,14 @@ impl Client {
             Scheme::HttpLocal => None,
             Scheme::Https => Some(build_client_config(None)?),
         };
-        Ok(Self { scheme, host, port, tls, proxy: resolve_proxy() })
+        Ok(Self {
+            scheme,
+            host,
+            port,
+            tls,
+            proxy: resolve_proxy(),
+            proxy_dead_until: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// 固定信任 CA（PEM 文件路径）——自签 Controller 或私有 CA 场景。
@@ -405,6 +422,7 @@ impl Client {
                 port,
                 tls: Some(build_client_config(Some(ca_pem))?),
                 proxy: resolve_proxy(),
+                proxy_dead_until: Arc::new(Mutex::new(None)),
             }),
         }
     }
@@ -818,26 +836,61 @@ impl Client {
         let mut conn = rustls::ClientConnection::new(Arc::clone(config), server_name)
             .map_err(|e| ApiError::transport(format!("TLS 客户端初始化失败: {e}")))?;
         let mut sock = match &self.proxy {
-            Some(p) => {
+            Some(p) if !self.proxy_dead() => {
                 let pa = format!("{}:{}", p.host, p.port);
-                let mut s = connect_with_timeout(&pa, IO_TIMEOUT).map_err(|e| {
-                    ApiError::transport(format!("连接 HTTPS 代理 {pa} 失败: {e}"))
-                })?;
-                set_timeouts(&s)?;
-                connect_proxy(&mut s, addr)?;
-                s
+                match self.connect_via_proxy(&pa, addr) {
+                    Ok(s) => s,
+                    Err(proxy_err) => {
+                        // 代理不可用（软件关闭 / Windows 系统代理残留但端口已死）：
+                        // 标记冷却期内跳过代理，并回退直连——避免整个 Controller 不可达。
+                        self.mark_proxy_dead();
+                        tracing::warn!(
+                            proxy = %pa,
+                            target = %addr,
+                            error = %proxy_err,
+                            "HTTPS 代理不可用，标记冷却并回退直连"
+                        );
+                        self.connect_direct(addr)?
+                    }
+                }
             }
-            None => {
-                let s = connect_with_timeout(addr, IO_TIMEOUT).map_err(|e| {
-                    ApiError::transport(format!("连接 Controller {addr} 失败: {e}"))
-                })?;
-                set_timeouts(&s)?;
-                s
-            }
+            _ => self.connect_direct(addr)?,
         };
         let mut tls = Stream::new(&mut conn, &mut sock);
         write_request(&mut tls, req_head, body)?;
         read_to_end(&mut tls)
+    }
+
+    /// 代理当前是否处于不可用冷却期（冷却期内跳过代理直接直连）。
+    fn proxy_dead(&self) -> bool {
+        self.proxy_dead_until
+            .lock()
+            .unwrap()
+            .map(|t| Instant::now() < t)
+            .unwrap_or(false)
+    }
+
+    /// 标记代理不可用，进入冷却期（此期间跳过代理直接直连，冷却后自动重新探测）。
+    fn mark_proxy_dead(&self) {
+        *self.proxy_dead_until.lock().unwrap() = Some(Instant::now() + PROXY_DEAD_COOLDOWN);
+    }
+
+    /// 经 HTTP CONNECT 隧道连接目标（代理可用路径）。
+    fn connect_via_proxy(&self, proxy_addr: &str, target: &str) -> ApiResult<TcpStream> {
+        let mut s = connect_with_timeout(proxy_addr, IO_TIMEOUT).map_err(|e| {
+            ApiError::transport(format!("连接 HTTPS 代理 {proxy_addr} 失败: {e}"))
+        })?;
+        set_timeouts(&s)?;
+        connect_proxy(&mut s, target)?;
+        Ok(s)
+    }
+
+    /// 直连目标（代理不可用/未配置时路径）。
+    fn connect_direct(&self, target: &str) -> ApiResult<TcpStream> {
+        let s = connect_with_timeout(target, IO_TIMEOUT)
+            .map_err(|e| ApiError::transport(format!("连接 Controller {target} 失败: {e}")))?;
+        set_timeouts(&s)?;
+        Ok(s)
     }
 }
 
@@ -1475,6 +1528,45 @@ mod tests {
         }
         tls_handle.join().expect("tls server");
         drop(proxy_handle); // 代理线程 detached（转发循环可能半开阻塞，不 join 防挂起）。
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn proxy_dead_falls_back_to_direct() {
+        // 代理地址不可达（软件关闭/系统代理残留）时：第一请求经代理失败 → 标记冷却
+        // 并回退直连成功；后续请求（冷却期内）跳过代理直接直连。
+        let _env = ENV_LOCK.lock().unwrap();
+        for v in ["MESHLINK_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
+            unsafe {
+                std::env::remove_var(v);
+            }
+        }
+        let tmp = std::env::temp_dir().join(format!(
+            "meshlink-tls-proxyfallback-test-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).expect("mkdir");
+        let ca_path = tmp.join("ca.pem");
+        let (tls_port, tls_handle) = spawn_tls_healthz(&ca_path);
+        // 拿一个空端口（bind 后 drop，端口暂时无监听）作死代理地址。
+        let dead_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+            l.local_addr().expect("addr").port()
+        };
+        unsafe {
+            std::env::set_var("MESHLINK_HTTPS_PROXY", format!("127.0.0.1:{dead_port}"));
+        }
+        let client = Client::with_ca_pem(&format!("https://127.0.0.1:{tls_port}"), &ca_path)
+            .expect("client with pinned CA");
+        // 代理不可达 → 回退直连 → 成功，并标记冷却。
+        let resp = client.healthz().expect("代理不可达时回退直连成功");
+        assert_eq!(resp, serde_json::json!({"ok": true}));
+        // 代理已被标记不可用（冷却期内后续请求将跳过代理直接直连）。
+        assert!(client.proxy_dead(), "代理应已被标记不可用");
+        unsafe {
+            std::env::remove_var("MESHLINK_HTTPS_PROXY");
+        }
+        tls_handle.join().expect("tls server");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
