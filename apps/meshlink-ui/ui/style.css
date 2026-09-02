@@ -339,4 +339,15 @@ html, body {
   max-height: 320px; overflow-y: auto; line-height: 1.6;
 }
 .dc-log .log-empty { color: #7c8494; }
+/* 日志优化：工具条 + 级别着色（深底日志面板）。 */
+.dc-log-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.dc-log-search {
+  flex: 1 1 200px; min-width: 0; background: var(--card); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; font-size: 13px;
+}
+.dc-log-err-only { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+.dc-lv-error { color: #ff6b6b; }
+.dc-lv-warn { color: #ffc04d; }
+.dc-lv-debug { color: #8fa3c0; }
+.dc-lv-info { color: #c7d0e0; }
 

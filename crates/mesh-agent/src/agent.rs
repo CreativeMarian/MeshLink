@@ -406,11 +406,39 @@ impl AgentCore {
     /// READY（可再次创建/加入，无需手动重启）。启动阶段失败（Controller 不可达等，
     /// agent 未 ready）不回 READY，保持 Failed 由上层重试（ensure_agent_running）。
     fn fail(&self, code: &str, err: impl std::fmt::Display) {
-        tracing::error!(target: "agent", code, error = %err, "会话流程失败");
-        *self.last_error.lock().unwrap() = Some((code.to_string(), err.to_string()));
+        let err_str = err.to_string();
+        // 日志优化：故障现场快照（event=FAIL_SNAPSHOT）。一次输出状态/会话/对端/路径/错误码
+        // 全字段，诊断中心「错误」分类可按 FAIL_SNAPSHOT 直接抓到失败现场，一眼定位"故障
+        // 在哪里"（无需再翻几十行前文拼上下文）。字段按固定顺序各自短持锁，无嵌套。
+        let snap = self.snapshot();
+        let (sess_id, sess_role, sess_code, peer_dev) = match self.session.lock().unwrap().as_ref() {
+            Some(s) => (
+                s.session_id.clone(),
+                s.role.clone(),
+                s.code.clone().unwrap_or_default(),
+                s.peer.device_id.clone(),
+            ),
+            None => (String::new(), String::new(), String::new(), String::new()),
+        };
+        tracing::error!(
+            target: "agent",
+            event = "FAIL_SNAPSHOT",
+            state = ?snap.state,
+            code,
+            error = %err_str,
+            controller = %self.controller_url.lock().unwrap(),
+            device_id = %self.device_id,
+            session_id = %sess_id,
+            role = %sess_role,
+            code6 = %sess_code,
+            peer_device = %peer_dev,
+            path = %self.current_path.lock().unwrap(),
+            "会话流程失败（故障现场）"
+        );
+        *self.last_error.lock().unwrap() = Some((code.to_string(), err_str.clone()));
         self.abort_session_resources();
         self.set_state(AgentState::Failed);
-        let _ = self.event_tx.send(Event::Error { code: code.into(), message: err.to_string() });
+        let _ = self.event_tx.send(Event::Error { code: code.into(), message: err_str });
         // P1-4：记录失败时刻，background_loop 短暂停留后自动回 READY（仅已就绪的会话失败）。
         *self.failed_at.lock().unwrap() = Some(Instant::now());
     }

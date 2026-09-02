@@ -229,6 +229,7 @@
         <div class="dc-health-row"><span class="info-label">延迟</span><span class="dc-health-val" id="dc-latency">--</span></div>
         <div class="dc-health-row"><span class="info-label">运行时间</span><span class="dc-health-val" id="dc-uptime">--</span></div>
         <div class="dc-health-row"><span class="info-label">路径</span><span class="dc-health-val" id="dc-path">--</span></div>
+        <div class="dc-health-row"><span class="info-label">最近失败</span><span class="dc-health-val" id="dc-lasterr">--</span></div>
       </div>
       <!-- 第三层：日志查看 -->
       <p class="section-title-sm" style="margin-top:16px">日志查看</p>
@@ -239,6 +240,11 @@
         <button class="dc-tab" data-logcat="error">错误</button>
         <button class="dc-tab" data-logcat="agent">Agent</button>
         <button class="dc-tab" data-logcat="controller">服务端</button>
+      </div>
+      <div class="dc-log-toolbar">
+        <input id="dc-log-search" class="dc-log-search" placeholder="搜索日志关键字（如 fail_snapshot、握手、502）..." />
+        <label class="dc-log-err-only"><input type="checkbox" id="dc-log-erronly" /> 仅错误/警告</label>
+        <button id="dc-log-refresh" class="btn btn-secondary btn-sm">刷新</button>
       </div>
       <pre id="dc-log-view" class="dc-log">加载中...</pre>
     </section>

@@ -14,7 +14,10 @@ use mesh_agent::{spawn_service, AgentConfig, OverlayKind};
 use std::time::Duration;
 
 fn main() {
-    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
+    // 日志优化：默认 agent 模块 debug（状态切换/会话建链/握手中间步骤/候选处理等流程细节
+    // 全部可见，便于定位故障），其余模块 info。agent.rs 内 debug 级日志很少（仅 4 处），
+    // 不会刷屏。可经 RUST_LOG 覆盖。
+    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent=debug,mesh_agent=debug".into());
     mesh_common::logging::init_logging(&log_level, false);
 
     let mut cfg = AgentConfig::default();

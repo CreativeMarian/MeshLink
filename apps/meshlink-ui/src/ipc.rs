@@ -856,37 +856,101 @@ fn append_log(name: &str, line: &str) {
     let _ = writeln!(f, "{line}");
 }
 
-/// 读取分类日志（诊断中心「日志查看」）。返回每个分类最近 `limit` 行。
+/// 日志优化：剥离 ANSI 转义序列（tracing 若在 TTY 会输出 \x1b[...m，落盘时可能残留）。
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c2 in chars.by_ref() {
+                if c2 == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// 日志优化：从 tracing 行解析级别（`时间 LEVEL target: msg`）。解析不到按 INFO 兜底。
+fn parse_level(line: &str) -> &'static str {
+    let clean = strip_ansi(line);
+    for lv in ["ERROR", "WARN", "DEBUG", "TRACE", "INFO"] {
+        if clean.split_whitespace().any(|w| w == lv) {
+            return match lv {
+                "ERROR" => "ERROR",
+                "WARN" => "WARN",
+                "DEBUG" => "DEBUG",
+                "TRACE" => "TRACE",
+                _ => "INFO",
+            };
+        }
+    }
+    "INFO"
+}
+
+/// 日志优化：结构化日志行（level 供 UI 着色/过滤）。
+struct LogLine {
+    level: &'static str,
+    text: String,
+}
+
+/// 读取分类日志（诊断中心「日志查看」）。返回每个分类最近 `limit` 行，
+/// `levels[i]` 与 `lines[i]` 一一对应（UI 按级别着色）。
 /// - `all`：合并 app + agent + controller + supernode（逐文件合并）。
 /// - `agent` / `controller` / `supernode`：对应原始日志。
-/// - `connection` / `network` / `error`：agent.log 按关键词过滤视图。
+/// - `connection` / `network`：agent.log 按关键词过滤视图。
+/// - `error`：agent.log 的 ERROR/WARN 级行 + 关键词兜底（防解析失败漏报）+ app.log 错误行。
 #[tauri::command]
 pub fn read_log_files(
     category: Option<String>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
-    let limit = limit.unwrap_or(200).min(2000);
+    let limit = limit.unwrap_or(300).min(2000);
     let cat = category.unwrap_or_else(|| "all".into());
     let dir = logs_dir();
     let _ = std::fs::create_dir_all(&dir);
 
-    let read_last = |name: &str, filter: Option<&[&str]>| -> Vec<String> {
+    // read_last：读文件 → 过滤（可选关键词）→ 解析级别 → 截断最近 limit 行。
+    let read_last = |name: &str, filter: Option<&[&str]>| -> Vec<LogLine> {
         let path = dir.join(name);
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Vec::new();
         };
-        let mut lines: Vec<String> = text
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .filter(|l| match filter {
-                Some(kws) => kws.iter().any(|k| l.to_ascii_lowercase().contains(k)),
-                None => true,
-            })
-            .map(|l| l.to_string())
-            .collect();
-        let skip = lines.len().saturating_sub(limit);
-        lines.drain(..skip);
-        lines
+        let mut out: Vec<LogLine> = Vec::new();
+        for raw in text.lines() {
+            let l = raw.trim();
+            if l.is_empty() {
+                continue;
+            }
+            if let Some(kws) = filter {
+                let lower = l.to_ascii_lowercase();
+                if !kws.iter().any(|k| lower.contains(k)) {
+                    continue;
+                }
+            }
+            out.push(LogLine {
+                level: parse_level(l),
+                text: l.to_string(),
+            });
+        }
+        let skip = out.len().saturating_sub(limit);
+        out.drain(..skip);
+        out
+    };
+
+    // 按级别过滤（error 分类用：只要 ERROR/WARN；agent 的 INFO 流程行也常藏关键上下文，
+    // 用关键词兜底保留）。
+    let to_json = |lines: Vec<LogLine>, extra: Vec<LogLine>| -> serde_json::Value {
+        let mut merged = lines;
+        merged.extend(extra);
+        serde_json::json!({
+            "category": cat,
+            "lines": merged.iter().map(|l| l.text.clone()).collect::<Vec<_>>(),
+            "levels": merged.iter().map(|l| l.level.to_string()).collect::<Vec<_>>(),
+        })
     };
 
     let files = [
@@ -896,28 +960,54 @@ pub fn read_log_files(
         ("supernode", dir.join("supernode.log")),
     ];
 
+    // 日志优化：connection/network/error 关键词扩充——补 AUTH_INVALID/invalid/401/502/403/
+    // refused/panic/FAIL_SNAPSHOT/握手/keepalive 等此前漏报的关键故障词（如 AUTH_INVALID）。
     let result = match cat.as_str() {
-        "app" => serde_json::json!({ "category": "app", "lines": read_last("app.log", None) }),
-        "agent" => serde_json::json!({ "category": "agent", "lines": read_last("agent.log", None) }),
-        "controller" => serde_json::json!({ "category": "controller", "lines": read_last("controller.log", None) }),
-        "supernode" => serde_json::json!({ "category": "supernode", "lines": read_last("supernode.log", None) }),
-        "connection" => serde_json::json!({
-            "category": "connection",
-            "source": "agent.log",
-            "lines": read_last("agent.log", Some(&["peer", "candidate", "directlink", "n2n", "session", "connected", "disconnect", "punch"])),
-        }),
-        "network" => serde_json::json!({
-            "category": "network",
-            "source": "agent.log",
-            "lines": read_last("agent.log", Some(&["stun", "nat", "udp", "socket", "port", "icmp"])),
-        }),
-        "error" => serde_json::json!({
-            "category": "error",
-            "lines": read_last("agent.log", Some(&["error", "failed", "失败", "timeout", "超时", "unreachable"]))
+        "app" => to_json(read_last("app.log", None), Vec::new()),
+        "agent" => to_json(read_last("agent.log", None), Vec::new()),
+        "controller" => to_json(read_last("controller.log", None), Vec::new()),
+        "supernode" => to_json(read_last("supernode.log", None), Vec::new()),
+        "connection" => to_json(
+            read_last(
+                "agent.log",
+                Some(&[
+                    "peer", "candidate", "directlink", "n2n", "session", "connected",
+                    "disconnect", "punch", "握手", "noise", "overlay", "smoke", "config",
+                    "keepalive", "fail_snapshot",
+                ]),
+            ),
+            Vec::new(),
+        ),
+        "network" => to_json(
+            read_last(
+                "agent.log",
+                Some(&[
+                    "stun", "nat", "udp", "socket", "port", "icmp", "srflx", "gather",
+                    "candidate", "edge", "supernode",
+                ]),
+            ),
+            Vec::new(),
+        ),
+        "error" => {
+            // ① agent.log 的 ERROR/WARN 级行（真错误，不依赖关键词）；
+            // ② 关键词兜底（防级别解析漏报，如异常格式行）；③ app.log 错误行。
+            let mut err_lines: Vec<LogLine> = read_last("agent.log", None)
                 .into_iter()
-                .chain(read_last("app.log", Some(&["error", "失败"])))
-                .collect::<Vec<_>>(),
-        }),
+                .filter(|l| l.level == "ERROR" || l.level == "WARN")
+                .collect();
+            err_lines.extend(read_last(
+                "agent.log",
+                Some(&[
+                    "error", "failed", "失败", "timeout", "超时", "unreachable", "invalid",
+                    "refused", "panic", "denied", "fail_snapshot", "401", "403", "502",
+                ]),
+            ));
+            let app_err = read_last(
+                "app.log",
+                Some(&["error", "失败", "未就绪", "启动失败", "exception"]),
+            );
+            to_json(err_lines, app_err)
+        }
         "files" => serde_json::json!({
             "category": "files",
             "dir": dir.to_string_lossy(),
@@ -927,20 +1017,24 @@ pub fn read_log_files(
             })).collect::<Vec<_>>(),
         }),
         _ => {
-            // all：合并四个原始日志（文件存在才合并）。
-            let mut lines: Vec<String> = Vec::new();
+            // all：合并四个原始日志（文件存在才合并），带 [tag] 前缀 + 级别。
+            let mut lines: Vec<LogLine> = Vec::new();
             for (tag, path) in &files {
                 if path.exists() {
                     if let Ok(text) = std::fs::read_to_string(path) {
-                        for l in text.lines().filter(|l| !l.trim().is_empty()) {
-                            lines.push(format!("[{tag}] {l}"));
+                        for raw in text.lines().filter(|l| !l.trim().is_empty()) {
+                            let l = raw.trim();
+                            lines.push(LogLine {
+                                level: parse_level(l),
+                                text: format!("[{tag}] {l}"),
+                            });
                         }
                     }
                 }
             }
             let skip = lines.len().saturating_sub(limit);
             lines.drain(..skip);
-            serde_json::json!({ "category": "all", "lines": lines })
+            to_json(lines, Vec::new())
         }
     };
 
@@ -1125,6 +1219,11 @@ fn ipc_loop(app: &AppHandle, client: &mut PipeClient, job_rx: &Receiver<IpcJob>)
         // 3. 等待下一条事件（200ms 窗口兼作命令等待）。
         match client.wait_message(Duration::from_millis(200)) {
             Some(ServerMessage::Event(ev)) => {
+                // 日志优化：agent 错误事件同步落 app.log（诊断中心 app 分类可见 UI 视角的
+                // 错误时间线，与 agent.log 的 FAIL_SNAPSHOT 相互印证，定位更清晰）。
+                if let Event::Error { code, message } = &ev {
+                    append_log("app.log", &format!("[MeshLink] [agent-event] 错误 {code}: {message}"));
+                }
                 let _ = app.emit("agent-event", &ev);
             }
             Some(ServerMessage::Response(_)) => {}

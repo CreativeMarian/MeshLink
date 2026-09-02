@@ -1263,9 +1263,20 @@ async function renderDiagCenter() {
     $("dc-h-ctl").className = "dc-health-val bad";
     $("dc-latency").textContent = "--";
   }
-  // 网络：无 Peer 是正常空闲态（"暂无连接数据"与"接口失败"分开）。
+  // 最近失败原因（agent 自动恢复 READY 后 last_error 已清空；仍失败时高亮展示）。
   try {
     const d = await send("GetDiagnostics");
+    const le = d && d.last_error_code ? (d.last_error_code + ": " + (d.last_error_message || "")) : "";
+    const el = $("dc-lasterr");
+    if (le) {
+      el.textContent = le;
+      el.className = "dc-health-val bad";
+      el.title = "最近一次失败，详见下方日志（搜索 fail_snapshot）";
+    } else {
+      el.textContent = "--";
+      el.className = "dc-health-val";
+    }
+    // 网络：无 Peer 是正常空闲态（"暂无连接数据"与"接口失败"分开）。
     const hasPeer = d.session && d.session.peers && d.session.peers.length;
     $("dc-path").textContent = d.current_path === "n2n" ? "N2N Relay" : d.current_path === "directlink" ? "DirectLink" : "--";
     $("dc-h-net").textContent = hasPeer ? "正常" : "空闲";
@@ -1277,17 +1288,40 @@ async function renderDiagCenter() {
   $("dc-uptime").textContent = "本次运行";
 }
 
-// 第三层：日志查看（分类读取 logs/ 目录）。
+// 当前加载的日志（levels[i] 对应 lines[i]，供搜索/仅错误过滤重渲染）。
+let dcLogLines = [];
+let dcLogLevels = [];
+let dcLogCat = "all";
+
+// 第三层：日志查看（分类读取 logs/ 目录，按级别着色 + 支持搜索/仅错误过滤）。
 async function loadDiagLogs(cat) {
+  dcLogCat = cat;
   const view = $("dc-log-view");
   view.textContent = "加载中...";
   try {
     const data = await invoke("read_log_files", { category: cat, limit: 300 });
-    const lines = (data && data.lines) || [];
-    view.textContent = lines.length ? lines.join("\n") : "（暂无日志）";
+    dcLogLines = (data && data.lines) || [];
+    dcLogLevels = (data && data.levels) || dcLogLines.map(() => "INFO");
+    renderDiagLogs();
   } catch (e) {
     view.textContent = "日志加载失败：" + formatError(e);
   }
+}
+
+// 按当前搜索词 + 仅错误开关重渲染日志（不重新读文件）。
+function renderDiagLogs() {
+  const view = $("dc-log-view");
+  const kw = ($("dc-log-search").value || "").trim().toLowerCase();
+  const errOnly = $("dc-log-erronly").checked;
+  const out = [];
+  for (let i = 0; i < dcLogLines.length; i++) {
+    const lv = dcLogLevels[i] || "INFO";
+    if (errOnly && lv !== "ERROR" && lv !== "WARN") continue;
+    if (kw && dcLogLines[i].toLowerCase().indexOf(kw) === -1) continue;
+    const cls = lv === "ERROR" ? "dc-lv-error" : lv === "WARN" ? "dc-lv-warn" : lv === "DEBUG" ? "dc-lv-debug" : "dc-lv-info";
+    out.push('<span class="' + cls + '">' + escapeHtml(dcLogLines[i]) + "</span>");
+  }
+  view.innerHTML = out.length ? out.join("\n") : "（无匹配日志）";
 }
 
 function renderDiagnostics(d) {
@@ -1521,6 +1555,10 @@ document.querySelectorAll(".dc-tab").forEach((b) => {
     loadDiagLogs(b.dataset.logcat);
   });
 });
+// 日志优化：搜索/仅错误过滤/刷新（基于已加载行即时重渲染，不重复读文件）。
+$("dc-log-search").addEventListener("input", renderDiagLogs);
+$("dc-log-erronly").addEventListener("change", renderDiagLogs);
+$("dc-log-refresh").addEventListener("click", () => loadDiagLogs(dcLogCat));
 $("join-code").addEventListener("input", (e) => {
   e.target.value = normalizeQuickCode(e.target.value);
 });
