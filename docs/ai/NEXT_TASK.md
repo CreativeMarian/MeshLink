@@ -3,15 +3,29 @@
 
 ## Current Milestone
 
-双机复测最新包（验证 UI 已连接展示 / 失败自动恢复 / 日志可见性）→ M1-3 Path Manager
+M1-3b：把 PathManager 接入 mesh-agent（M1-3a 核心已交付，commit 3756b69）
 
 
-## 当前焦点（双机复测 + 后续优化）
+## 当前焦点（M1-3b PathManager 接入 agent）
 
-- Phase1（8cbf219）、Phase2（a8842b2）、日志优化（e35c4ff）、审查后续项 P2-1~P2-4
-  （4897262：heartbeat 连续失败才断开 / 事件轮询背压 / mesh-ipc 广播有界化 /
-  controller.db quick_check 完整性）均已完成并推送，相关测试全 PASS。
-- **待办：双机复测最新包**（用户暂没时间，一版先敲定；等用户方便时再测）：
+- M1-3a 已完成（commit 3756b69，已 push）：overlay-router 从占位符升级为可用
+  PathManager——多 Provider 注册 / attach_peer（subscribe_events+connect_peer）/
+  evaluate() 同步可测选路决策（健康采样+本地快照，锁纪律防死锁）/ 强制路径与自动
+  共存 / Hard Failure(Fatal 事件)立即熔断切换 + Quality Degradation(Critical<40 持续
+  3s)驱动切换 / 回切高 rank 路径须稳定 10s 防抖 / PathSwitchRecord 切换事件 +
+  snapshot 诊断 / run() tokio 定时 wrapper。单测 10/10 PASS，cargo check --workspace
+  干净。
+- **M1-3b 待做（下一步）**：
+  1. agent.rs AgentCore 内建 `PathManager`，注册 DirectLink + N2N 两个 provider；
+  2. N2NTransport::subscribe_events 空实现 → 接 PathManager 事件回流（M1-3 预留点，
+     当前 N2N 事件走 mesh-ipc Event）；
+  3. pump() 数据面改为经 PathManager::send_packet 转发 active path（不中断 Overlay）；
+  4. finish_connected 接入（active path 冒烟 + PathKind 上抛）；
+  5. SetPath 命令映射到 force_path（auto/directlink/n2n）；
+  6. n2n_status_json / status 上抛 active_path + PathSwitchRecord（诊断页展示）。
+- 验证：`cargo test -p overlay-router`（10）+ `cargo test -p mesh-agent --lib` +
+  `cargo test -p mesh-agent --test n2n_flow -- --test-threads=1` + JS 契约 4。
+- 双机复测最新包（用户暂没时间，一版先敲定；等用户方便时再测）：
   1. 首页/连接码页/加入进度页在底层 Connected 后正确展示已连接（不再卡「正在寻找设备」/
      「等待好友加入」）；
   2. 会话失败后 UI 显示真实原因并在 ~3s 后自动回可操作状态（P1-4）；
@@ -25,7 +39,7 @@
   Compress-Archive 六件套；打包前关 MeshLink.exe/controller.exe（文件锁，但用户
   controller PID 17076 运行中需保留时跳过 controller）。
 
-## M1-3 Path Manager（后续）
+## M1-3 Path Manager（完成度：a 已交付，b 进行中）
 
 ## Goal
 

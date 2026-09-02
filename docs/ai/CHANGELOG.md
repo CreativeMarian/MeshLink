@@ -1,6 +1,47 @@
 # MeshLink Changelog
 
 
+## M1-3a Path Manager 核心：多路径选路/熔断/防抖/强制路径（2026-09-02，commit 3756b69）
+
+Added:
+
+- **overlay-router 从占位符升级为 Path Manager（M1-3 前半段）**：新增
+  `crates/overlay-router/src/path_manager.rs`，只面向 `transport-api::TransportProvider`，
+  禁止任何具体实现类型/分支。
+- **多 Provider 注册**：`register(name, provider, kind, breaker_scope)` 返回槽位索引，
+  每个 provider 独立健康/熔断/退化计时；`set_policy()` 初始策略（默认 DirectFirst）。
+- **强制路径与自动路径共存**：`force_path(Some(slot))` 锁定指定路径（agent SetPath
+  auto/directlink/n2n 映射入口）；强制路径熔断时自动让出给最佳候选（不死锁在坏路径）。
+- **事件驱动的 Hard Failure**：`handle_event` 消费 `Fatal` / `PeerUnreachable` 事件 →
+  立即熔断对应 BreakerScope（DirectLinkPeer / N2NProvider）→ 下一次 `evaluate` 即切换；
+  `HealthChanged` 事件实时更新健康缓存。
+- **健康分驱动的 Quality Degradation**：score < 40（Critical）持续 3s → 切换到最佳
+  候选；两套触发机制分离（确认版 §4）。
+- **防抖回切**：更高 rank 路径（P2P 恢复）须连续稳定 10s（healthy_threshold=70）
+  才回切，避免 P2P/N2N 抖动来回切换。
+- **选路决策同步可测**：`evaluate(now)` 纯同步；内部先快照健康/熔断/退化/稳定到本地
+  Vec 再决策，**决策期不嵌套持锁**（修复同线程二次加锁死锁——首版死锁导致测试挂起）。
+- **切换事件 + 诊断快照**：`PathSwitchRecord{from,to,reason,score,at_ms}`（文档 9.5）
+  经 event_sink 上抛；`snapshot()` 返回 active/paths（score/rtt/breaker）供诊断页。
+- **run() wrapper**：tokio interval 定时驱动 drain_events + evaluate（agent 侧
+  M1-3b 再 spawn）。
+
+Changed:
+
+- `crates/overlay-router/Cargo.toml`：补 tokio(sync/time)、tracing、config-manager
+  （RuntimeParams 作熔断参数来源）、async-trait/serde；dev-deps tokio(macros/rt) 供测试。
+- `crates/overlay-router/src/lib.rs`：导出 PathManager 及类型。
+
+Verified:
+
+- overlay-router 单测 **10/10 PASS**（initial_select / selects_n2n_when_down /
+  forced_path_locks / degraded_switches_after_window / fatal_breaks_immediately /
+  switchback_requires_stability / forced_path_failed_falls_back / snapshot_reflects /
+  send_packet_routes_to_active / event_sink_emits_switch_record），0.00s 无挂起。
+- cargo check --workspace 干净（仅 mesh-vnic-test-helper 历史遗留 unused `sn` warning，
+  非本次改动）。
+
+
 ## 审查后续项 P2-1~P2-4：心跳防误报 + 轮询背压 + 广播有界化 + DB 完整性（2026-09-02，commit 4897262）
 
 Changed / Fixed:

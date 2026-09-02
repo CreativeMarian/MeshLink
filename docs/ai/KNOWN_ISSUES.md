@@ -12,6 +12,10 @@
 
 - Fast reconnect optimization
 
+- M1-3b：PathManager 尚未接入 mesh-agent（pump 数据面仍固定走单一 transport，N2N
+  subscribe_events 仍空实现待接 PathManager 事件回流；SetPath 强制路径未映射到
+  force_path）。核心已就绪（commit 3756b69，10/10 单测），待下一步接入。
+
 
 ## Phase1 逻辑审查优化：P0-1 同步调用隔离 + P1-4 失败自动恢复（2026-09-02，commit 8cbf219）
 

@@ -134,15 +134,34 @@ v0.1.0
     controller 4 包全 PASS；n2n_flow 单跑 3 次全过（全跑 486/565 为已知 free_port
     TOCTOU UDP bind 竞态，非本次回归）。
 
+[x] M1-3a Path Manager 核心（commit 3756b69）：
+    overlay-router 从占位符升级为可用的多路径选路管理器（M1-3 前半段）：
+    ① 只面向 transport-api::TransportProvider，禁止任何具体实现类型/分支（确认版 §4）；
+    ② register()/set_policy()/force_path()：多 Provider 注册 + 自动/强制双模式，
+       强制路径(SetPath 映射)与自动路径共存；
+    ③ attach_peer()：统一 subscribe_events + connect_peer（事件先于连接订阅，
+       回流窗口不丢 Fatal/Reachable）；
+    ④ evaluate()：同步可测的选路决策入口——健康采样 + 本地快照决策（锁纪律：
+       先快照后决策，决策期不嵌套持锁，修复同线程二次加锁死锁）；
+    ⑤ Hard Failure（Fatal/PeerUnreachable 事件）→ 立即熔断并切换；
+       Quality Degradation（Critical<40 持续 3s）→ 驱动切换；两套机制分离；
+    ⑥ 回切更高 rank 路径（P2P 恢复）须稳定 10s 防抖（switchback_stable）；
+    ⑦ PathSwitchRecord 切换事件（文档 9.5 from/to/reason/score）+ snapshot 诊断
+       （active/paths/score/rtt/breaker）；
+    ⑧ run() tokio 定时驱动 wrapper（agent 接入在 M1-3b）。
+    验证：overlay-router 10/10 单测 PASS（initial/down/forced/degraded/fatal/
+    switchback_stable/forced_failed/snapshot/send_routes/event_emit，0.00s 无挂起）；
+    cargo check --workspace 干净。
+
 
 ## Current Development
 
-M1-3 Path Manager（DirectLink ↔ N2N 自动选路）
+M1-3b 把 PathManager 接入 mesh-agent（pump 转发走 active path + SetPath/status 上抛）
 
 
 ## Next Milestones
 
-M1-3 Path Manager
+M1-3b Path Manager 接入 agent
 
 M1-4 HFS 文件共享
 
