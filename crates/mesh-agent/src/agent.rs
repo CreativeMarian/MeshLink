@@ -10,7 +10,7 @@
 use crate::overlay::{MockOverlay, OverlayBackend, OverlayConfig, WintunOverlay};
 use crate::runtime::RuntimeState;
 use crate::state::{ActiveSession, AgentState, PeerView, SessionSnapshot, StatusSnapshot};
-use controller_client::{Candidate, Client, InviteTtl, PeerCandidates, SessionView};
+use controller_client::{ApiError, ApiResult, Candidate, Client, InviteTtl, PeerCandidates, SessionView};
 use directlink::crypto::StaticIdentity;
 use directlink::transport::DirectLinkTransport;
 use mesh_ipc::{Command, Event, Request, Response};
@@ -262,6 +262,8 @@ pub(crate) struct AgentCore {
     /// 最近一次流程/启动失败（code, message）。诊断中心与依赖 Controller 的命令
     /// 据此快速返回明确原因（如 CONTROLLER_UNREACHABLE），避免阻塞/笼统"连接失败"。
     pub last_error: Mutex<Option<(String, String)>>,
+    /// P1-4：进入 Failed 的时刻（自动回 READY 的时间基准；None = 非失败态）。
+    pub failed_at: Mutex<Option<Instant>>,
 }
 
 impl AgentCore {
@@ -286,6 +288,7 @@ impl AgentCore {
         // 成功恢复到 Ready：清空上次失败记录（诊断不再显示过期错误）。
         if state == AgentState::Ready {
             *self.last_error.lock().unwrap() = None;
+            *self.failed_at.lock().unwrap() = None;
         }
         tracing::info!(target: "agent", state = ?state, "状态切换");
     }
@@ -367,7 +370,9 @@ impl AgentCore {
         }
         // 向 Controller 验证会话仍存在（等待 joiner 阶段才恢复）。
         let client = core.controller();
-        match client.get_session(&core.credential(), &session_id) {
+        let cred = core.credential();
+        let sid = session_id.clone();
+        match AgentCore::controller_call(move || client.get_session(&cred, &sid)).await {
             Ok(view) if view.status == "WAITING" || view.status == "waiting" => {
                 *core.recovered_session.lock().unwrap() = Some(ActiveSession {
                     session_id: session_id.clone(),
@@ -397,12 +402,17 @@ impl AgentCore {
     }
 
     /// 流程失败：FAILED 状态 + Error 事件 + 会话资源回收。
+    /// P1-4：失败后短暂保持 Failed（UI 展示真实原因），随后若仍无活动会话则自动回
+    /// READY（可再次创建/加入，无需手动重启）。启动阶段失败（Controller 不可达等，
+    /// agent 未 ready）不回 READY，保持 Failed 由上层重试（ensure_agent_running）。
     fn fail(&self, code: &str, err: impl std::fmt::Display) {
         tracing::error!(target: "agent", code, error = %err, "会话流程失败");
         *self.last_error.lock().unwrap() = Some((code.to_string(), err.to_string()));
         self.abort_session_resources();
         self.set_state(AgentState::Failed);
         let _ = self.event_tx.send(Event::Error { code: code.into(), message: err.to_string() });
+        // P1-4：记录失败时刻，background_loop 短暂停留后自动回 READY（仅已就绪的会话失败）。
+        *self.failed_at.lock().unwrap() = Some(Instant::now());
     }
 
     /// Controller 已就绪（Ready/Connected 等）？依赖 Controller 的命令据此快速失败，
@@ -445,6 +455,24 @@ impl AgentCore {
 
     fn aborted(&self) {
         tracing::info!(target: "agent", "会话流程被取消");
+    }
+
+    /// 在 blocking 线程池执行同步 Controller 调用（P0-1 根治）。
+    ///
+    /// controller-client 是同步裸 TCP（IO_TIMEOUT=8s），在 2-worker Tokio runtime 里
+    /// 直接调用会占用 worker 线程；Controller 慢/挂起时一次最多阻塞 8s，且 startup /
+    /// background_loop / 会话流程都在争用这 2 个 worker，容易让其它 async 任务饿死
+    /// （卡顿、心跳延迟、事件不推送）。`spawn_blocking` 走独立线程池，不占 worker。
+    async fn controller_call<T: Send + 'static>(
+        f: impl FnOnce() -> ApiResult<T> + Send + 'static,
+    ) -> ApiResult<T> {
+        tokio::task::spawn_blocking(f).await.unwrap_or_else(|e| {
+            Err(ApiError {
+                status: 0,
+                code: "INTERNAL".into(),
+                message: format!("blocking 任务失败: {e}"),
+            })
+        })
     }
 
     /// 停泵 + 拆 Overlay（会话状态本身由调用方处理）。
@@ -520,7 +548,9 @@ impl AgentCore {
                 // 同步创建会话：响应本身必须携带 6 位码（用户规格三：UI 显示
                 // 不依赖后续 WaitingForPeer 事件）。code 全程 string，固定宽度。
                 let client = core.controller();
-                let view = match client.create_session(&core.credential(), &core.cfg.network_id) {
+                let cred = core.credential();
+                let net = core.cfg.network_id.clone();
+                let view = match AgentCore::controller_call(move || client.create_session(&cred, &net)).await {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = reply.send(error_response(id, "SESSION_CREATE_FAILED", format!("{e}")));
@@ -582,7 +612,9 @@ impl AgentCore {
                 let core = self.clone();
                 tokio::spawn(async move {
                     let client = core.controller();
-                    let view = match client.join_session(&core.credential(), &code) {
+                    let cred = core.credential();
+                    let code2 = code.clone();
+                    let view = match AgentCore::controller_call(move || client.join_session(&cred, &code2)).await {
                         Ok(v) => {
                             // M1-2.x：Session 生命周期日志——加入成功（Controller 已核验 6 位码）。
                             tracing::info!(
@@ -695,7 +727,8 @@ impl AgentCore {
                     return;
                 }
                 let client = self.controller();
-                match client.list_friendships(&self.credential()) {
+                let cred = self.credential();
+                match AgentCore::controller_call(move || client.list_friendships(&cred)).await {
                     Ok(friends) => {
                         let list: Vec<serde_json::Value> = friends
                             .iter()
@@ -871,7 +904,9 @@ impl AgentCore {
             }
             CommandKind::RejectConnectionRequest { session_id } => {
                 let client = self.controller();
-                match client.reject_connection_request(&self.credential(), &session_id) {
+                let cred = self.credential();
+                let sid = session_id.clone();
+                match AgentCore::controller_call(move || client.reject_connection_request(&cred, &sid)).await {
                     Ok(()) => {
                         let _ = reply.send(ok(serde_json::json!({ "rejected": true })));
                     }
@@ -907,7 +942,7 @@ impl AgentCore {
                 let url = self.controller_url();
                 let device_id = self.device_id.clone();
                 let started = Instant::now();
-                let (connected, latency_ms) = match client.healthz() {
+                let (connected, latency_ms) = match AgentCore::controller_call(move || client.healthz()).await {
                     Ok(_) => (true, started.elapsed().as_millis() as u64),
                     Err(_) => (false, 0u64),
                 };
@@ -920,7 +955,8 @@ impl AgentCore {
             }
             CommandKind::Heartbeat => {
                 let client = self.controller();
-                match client.presence_heartbeat(&self.credential()) {
+                let cred = self.credential();
+                match AgentCore::controller_call(move || client.presence_heartbeat(&cred)).await {
                     Ok(()) => {
                         let _ = reply.send(ok(serde_json::json!({ "ok": true })));
                     }
@@ -949,11 +985,15 @@ impl AgentCore {
             CommandKind::RegisterLocalSupernode { sn_id, host, port, priority } => {
                 let client = self.controller();
                 let credential = self.credential();
+                let sn = sn_id.clone();
+                let h = host.clone();
                 // 注册本机（监督者拉起的）Supernode 到 Controller Registry。
-                match client.register_supernode(&credential, &sn_id, &host, port, priority) {
+                match AgentCore::controller_call(move || client.register_supernode(&credential, &sn, &h, port, priority)).await {
                     Ok(()) => {
                         // 注册成功后刷新本机 N2N Supernode 池（含新登记节点）。
-                        match client.list_supernodes(&credential) {
+                        let client2 = self.controller();
+                        let cred2 = self.credential();
+                        match AgentCore::controller_call(move || client2.list_supernodes(&cred2)).await {
                             Ok(sns) if !sns.is_empty() => {
                                 let eps: Vec<SupernodeEndpoint> = sns
                                     .iter()
@@ -1152,6 +1192,7 @@ impl MeshAgent {
             current_path: Mutex::new(String::new()),
             recovered_session: Mutex::new(None),
             last_error: Mutex::new(None),
+            failed_at: Mutex::new(None),
         });
 
         let runtime = Arc::new(
@@ -1401,11 +1442,11 @@ pub fn spawn_service(
 
 async fn startup(core: Arc<AgentCore>) {
     core.set_state(AgentState::ControllerConnecting);
-    let client = core.controller();
     // healthz 重试（Controller 可能晚于 Agent 启动）。
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match client.healthz() {
+        let client = core.controller();
+        match AgentCore::controller_call(move || client.healthz()).await {
             Ok(_) => break,
             Err(e) => {
                 // 每次失败记录原因（agent.log 可见），便于定位是 DNS / 连接 / TLS 问题。
@@ -1420,8 +1461,10 @@ async fn startup(core: Arc<AgentCore>) {
 
     // 设备注册（幂等；公钥绑定信任根）。首次 → 新 credential 并 DPAPI 持久化。
     let fingerprint = core.identity.fingerprint();
+    let device_id = core.device_id.clone();
     let name = core.cfg.device_name.clone().or_else(device_hostname);
-    match client.register_device(&core.device_id, &fingerprint, name.as_deref()) {
+    let client = core.controller();
+    match AgentCore::controller_call(move || client.register_device(&device_id, &fingerprint, name.as_deref())).await {
         Ok(resp) if resp.status == "registered" => {
             let cred = resp.credential.unwrap_or_default();
             if cred.is_empty() {
@@ -1488,7 +1531,8 @@ async fn startup(core: Arc<AgentCore>) {
     // M1-2：拉取 Controller Supernode Registry → 下发 N2N Supernode 池（非阻塞）。
     {
         let client = core.controller();
-        match client.list_supernodes(&core.credential()) {
+        let cred = core.credential();
+        match AgentCore::controller_call(move || client.list_supernodes(&cred)).await {
             Ok(sns) if !sns.is_empty() => {
                 let eps: Vec<SupernodeEndpoint> = sns
                     .iter()
@@ -1517,10 +1561,10 @@ async fn startup(core: Arc<AgentCore>) {
 /// 幂等注册刷新 credential，然后 READY。传输层已启动，不重复 start。
 async fn reconnect_controller(core: Arc<AgentCore>) -> bool {
     core.set_state(AgentState::ControllerConnecting);
-    let client = core.controller();
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        match client.healthz() {
+        let client = core.controller();
+        match AgentCore::controller_call(move || client.healthz()).await {
             Ok(_) => break,
             Err(e) => {
                 if Instant::now() > deadline {
@@ -1536,8 +1580,10 @@ async fn reconnect_controller(core: Arc<AgentCore>) -> bool {
         }
     }
     let fingerprint = core.identity.fingerprint();
+    let device_id = core.device_id.clone();
     let name = core.cfg.device_name.clone().or_else(device_hostname);
-    match client.register_device(&core.device_id, &fingerprint, name.as_deref()) {
+    let client = core.controller();
+    match AgentCore::controller_call(move || client.register_device(&device_id, &fingerprint, name.as_deref())).await {
         Ok(resp) if resp.status == "registered" => {
             let cred = resp.credential.unwrap_or_default();
             if cred.is_empty() {
@@ -1588,6 +1634,19 @@ async fn background_loop(core: Arc<AgentCore>) {
         if !core.ready.load(Ordering::Acquire) {
             continue;
         }
+        // P1-4：Failed 自动恢复——失败已通过 Error 事件展示给 UI，停留 3s 后若仍
+        // Failed 且无活动会话，自动回 READY（可再次创建/加入，无需手动重启）。
+        if let Some(t) = *core.failed_at.lock().unwrap() {
+            if t.elapsed() >= Duration::from_secs(3) {
+                *core.failed_at.lock().unwrap() = None;
+                if core.snapshot().state == AgentState::Failed && core.session.lock().unwrap().is_none() {
+                    core.set_state(AgentState::Ready);
+                    let _ = core.event_tx.send(Event::Disconnected {
+                        reason: "连接失败，已自动恢复就绪".into(),
+                    });
+                }
+            }
+        }
         heartbeat_tick += 1;
         presence_tick += 1;
 
@@ -1596,14 +1655,14 @@ async fn background_loop(core: Arc<AgentCore>) {
             heartbeat_tick = 0;
             let client = core.controller();
             let cred = core.credential();
-            let _ = client.presence_heartbeat(&cred);
+            let _ = AgentCore::controller_call(move || client.presence_heartbeat(&cred)).await;
         }
 
         // 事件轮询（friends/connection_request 等）。
         let client = core.controller();
         let cred = core.credential();
         let since = *core.poll_seq.lock().unwrap();
-        match client.poll_events(&cred, since) {
+        match AgentCore::controller_call(move || client.poll_events(&cred, since)).await {
             Ok(poll) => {
                 *core.poll_seq.lock().unwrap() = poll.seq;
                 for ev in poll.events {
@@ -1618,7 +1677,7 @@ async fn background_loop(core: Arc<AgentCore>) {
         // 好友/设备在线状态刷新（约每 30s）。
         if presence_tick >= 15 {
             presence_tick = 0;
-            refresh_presence(&core);
+            refresh_presence(&core).await;
         }
     }
 }
@@ -1681,10 +1740,10 @@ fn forward_controller_event(core: &Arc<AgentCore>, ev: &controller_client::Contr
 }
 
 /// 好友/设备在线状态刷新：拉取好友列表，对比缓存并发送 FriendOnline/Offline。
-fn refresh_presence(core: &Arc<AgentCore>) {
+async fn refresh_presence(core: &Arc<AgentCore>) {
     let client = core.controller();
     let cred = core.credential();
-    let Ok(friends) = client.list_friendships(&cred) else {
+    let Ok(friends) = AgentCore::controller_call(move || client.list_friendships(&cred)).await else {
         return;
     };
     let mut online_now: Vec<(String, String)> = Vec::new(); // (device_id, name)
@@ -1821,8 +1880,13 @@ async fn creator_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend:
         return core.fail("CANDIDATE_GATHER_FAILED", "本机无可用 host candidate");
     }
     let _ = core.event_tx.send(Event::GatheringCandidates { count: cands.len() });
-    if let Err(e) = client.put_candidates(&cred, &session_id, &cands) {
-        return core.fail("CANDIDATE_UPLOAD_FAILED", e);
+    {
+        let c = client.clone();
+        let cr = cred.clone();
+        let sid = session_id.clone();
+        if let Err(e) = AgentCore::controller_call(move || c.put_candidates(&cr, &sid, &cands)).await {
+            return core.fail("CANDIDATE_UPLOAD_FAILED", e);
+        }
     }
 
     core.set_state(AgentState::WaitingForPeer);
@@ -1841,7 +1905,12 @@ async fn creator_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend:
         if Instant::now() > deadline {
             return core.fail_timeout("WAIT_PEER_TIMEOUT", "等待好友加入");
         }
-        match client.get_session(&cred, &session_id) {
+        match AgentCore::controller_call({
+            let c = client.clone();
+            let cr = cred.clone();
+            let sid = session_id.clone();
+            move || c.get_session(&cr, &sid)
+        }).await {
             Ok(v) => {
                 if let (Some(me), Some(other)) =
                     (my_member(&v, &core.device_id), other_member(&v, &core.device_id))
@@ -1990,12 +2059,22 @@ async fn joiner_flow_with_view(core: Arc<AgentCore>, view: SessionView, friend: 
         return core.fail("CANDIDATE_GATHER_FAILED", "本机无可用 host candidate");
     }
     let _ = core.event_tx.send(Event::GatheringCandidates { count: cands.len() });
-    if let Err(e) = client.put_candidates(&cred, &session_id, &cands) {
-        return core.fail("CANDIDATE_UPLOAD_FAILED", e);
+    {
+        let c = client.clone();
+        let cr = cred.clone();
+        let sid = session_id.clone();
+        if let Err(e) = AgentCore::controller_call(move || c.put_candidates(&cr, &sid, &cands)).await {
+            return core.fail("CANDIDATE_UPLOAD_FAILED", e);
+        }
     }
 
     // 拉取 creator 候选。
-    let peers = match client.get_candidates(&cred, &session_id) {
+    let peers = match AgentCore::controller_call({
+        let c = client.clone();
+        let cr = cred.clone();
+        let sid = session_id.clone();
+        move || c.get_candidates(&cr, &sid)
+    }).await {
         Ok(p) => p,
         Err(e) => return core.fail("CANDIDATE_FETCH_FAILED", e),
     };
@@ -2119,7 +2198,12 @@ async fn creator_flow_n2n_with_view(core: Arc<AgentCore>, view: SessionView, fri
         if Instant::now() > deadline {
             return core.fail_timeout("WAIT_PEER_TIMEOUT", "等待好友加入");
         }
-        match client.get_session(&cred, &session_id) {
+        match AgentCore::controller_call({
+            let c = client.clone();
+            let cr = cred.clone();
+            let sid = session_id.clone();
+            move || c.get_session(&cr, &sid)
+        }).await {
             Ok(v) => {
                 if let (Some(me), Some(other)) =
                     (my_member(&v, &core.device_id), other_member(&v, &core.device_id))
@@ -2460,8 +2544,10 @@ async fn finish_connected(
             let core = core.clone();
             let client = core.controller();
             let cred = core.credential();
+            let pid = peer_id.clone();
+            let lip = local_ip.to_string();
             tokio::spawn(async move {
-                match client.upsert_recent_connection(&cred, &peer_id, &local_ip.to_string(), path_label) {
+                match AgentCore::controller_call(move || client.upsert_recent_connection(&cred, &pid, &lip, path_label)).await {
                     Ok(_) => {
                         let _ = core.event_tx.send(Event::RecentConnectionsChanged);
                     }
