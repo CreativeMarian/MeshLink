@@ -95,6 +95,21 @@ v0.1.0
     mvp_gate / friend_flow / n2n_flow(3) / service_identity / session_lifecycle /
     recent_connection_test 全 PASS。
 
+[x] 日志系统优化（commit e35c4ff）：
+    ① agent 默认日志级别 `info` → `info,agent=debug,mesh_agent=debug`（agent.rs 仅 4 处
+    debug 不刷屏；状态切换/会话建链/候选处理/重试等中间步骤全部可见）。
+    ② fail() 输出**故障现场快照** `FAIL_SNAPSHOT`（一行含 event 标记/状态/错误码/完整
+    消息/controller/device_id/会话/对端/路径，诊断中心 error 分类可直接 grep）。
+    ③ read_log_files 分类增强：error 分类改为**按 ERROR/WARN 级别真解析**（不再漏
+    AUTH_INVALID 等关键词外错误）+ 关键词兜底（invalid/401/403/502/refused/panic 等扩充）；
+    connection/network 关键词扩充（握手/noise/smoke/fail_snapshot/srflx/gather 等）；
+    返回 levels 数组供 UI 着色。
+    ④ 诊断中心 UI：健康区加「最近失败」展示；日志区加**关键字搜索 + 仅错误/警告过滤 +
+    刷新按钮**；日志行按级别着色（ERROR 红/WARN 黄/DEBUG 灰）。
+    ⑤ UI 侧收到 agent 的 Error 事件同步落 app.log（UI 视角错误时间线）。
+    验证：cargo check 干净；lib 11 / JS 契约 4 / n2n_flow(3, --test-threads=1) /
+    session_lifecycle(含 FAIL_SNAPSHOT 输出确认) 全 PASS。
+
 [x] Phase2 逻辑审查优化（commit a8842b2）：
     P1-2：finish_connected 诊断 watchdog `loop { sleep 500ms; 打日志 }` 原不查 stop
     标志、永不退出（每次连接泄漏空转任务 + 每 2s 刷日志）；加 stop 检查退出。

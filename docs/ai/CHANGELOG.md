@@ -1,6 +1,36 @@
 # MeshLink Changelog
 
 
+## 日志系统优化：更多日志 + 更清晰定位（2026-09-02，commit e35c4ff）
+
+Changed:
+
+- **agent 默认日志级别提升**：`info` → `info,agent=debug,mesh_agent=debug`。agent.rs 内
+  debug 仅 4 处（不刷屏），状态切换/会话建链/候选处理/重试等中间步骤现在全部可见。
+- **故障现场快照 FAIL_SNAPSHOT**：`fail()` 失败时一行输出完整现场——event 标记 /
+  state / 错误码 / 完整错误消息 / controller / device_id / 会话(session_id/role/code6) /
+  对端 / 当前路径。诊断中心 error 分类可 grep `fail_snapshot` 直接抓到失败现场，
+  无需翻几十行前文拼上下文。
+- **UI 侧错误落盘**：MeshLink 收到 agent 的 Error 事件（如 AUTH_INVALID /
+  CONTROLLER_UNREACHABLE）同步写 app.log，app 分类可见 UI 视角错误时间线。
+- **分类日志真解析**：`read_log_files` error 分类改为按 ERROR/WARN 级别解析（不再依赖
+  关键词而漏掉 AUTH_INVALID 这类词外错误），并补关键词兜底（invalid/401/403/502/
+  refused/panic 等）；connection/network 关键词扩充（握手/noise/smoke/fail_snapshot/
+  srflx/gather/supernode 等）。返回 `levels[]` 与 `lines[]` 一一对应。
+- **诊断中心 UI**：健康区加「最近失败」；日志区加关键字搜索（提示如 fail_snapshot、
+  握手、502）、「仅错误/警告」过滤、刷新按钮；日志行按级别着色（ERROR 红/WARN 黄/
+  DEBUG 灰）。
+
+Verified:
+
+- cargo check 干净；lib 11 / JS 契约 4（quick_code/ui_error/recent/boot_heartbeat）/
+  n2n_flow(3, --test-threads=1) / session_lifecycle 全 PASS。
+- FAIL_SNAPSHOT 实际输出确认：
+  `ERROR agent: 会话流程失败（故障现场） event="FAIL_SNAPSHOT" state=Ready
+  code="SESSION_CODE_INVALID" error=... controller=... device_id=... session_id=...
+  role=... code6=... peer_device=... path=...`
+
+
 ## Phase2 逻辑审查优化：P1-2 watchdog 退出 + P1-3 keepalive 清理（2026-09-02，commit a8842b2）
 
 Fixed:

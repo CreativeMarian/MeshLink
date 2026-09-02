@@ -8,15 +8,15 @@
 
 ## 当前焦点（打包 + 双机复测）
 
-- Phase1（commit 8cbf219：P0-1 同步调用 offload + P1-4 失败自动恢复）与 Phase2
-  （commit a8842b2：P1-2 watchdog 退出 + P1-3 keepalive 清理）均已完成并推送，
-  相关测试全 PASS。
-- **下一步：重新打包 dist + 双机复测**（用最新代码编译 MeshLink.exe / mesh-agent.exe /
-  controller.exe 后打包，覆盖虚拟机）：
+- Phase1（commit 8cbf219）、Phase2（commit a8842b2）、日志优化（commit e35c4ff：
+  agent debug 默认 + FAIL_SNAPSHOT 故障现场 + 分类日志级别解析 + 诊断中心搜索/着色）
+  均已完成并推送，相关测试全 PASS。
+- **下一步：重新打包 dist + 双机复测**（MeshLink.exe 需重新编译，UI 有改动）：
   1. 首页/连接码页/加入进度页在底层 Connected 后正确展示已连接（不再卡「正在寻找设备」/
      「等待好友加入」）；
   2. 会话失败后 UI 显示真实原因并在 ~3s 后自动回可操作状态（P1-4）；
-  3. 长时间运行 / 多次会话后无卡顿、无 watchdog 刷屏、无 keepalive 线程残留（P1-2/P1-3）。
+  3. 日志可见性：失败时 agent.log 出现 FAIL_SNAPSHOT 故障现场、诊断中心 error 分类按
+     级别着色 + 搜索 fail_snapshot 能定位；长时间运行无 watchdog/keepalive 残留。
   前提：两台都用新包、虚拟机无残留手动旧 mesh-agent、虚拟机 config 无旧 LAN 残留。
 - 之后可做 P2-1~P2-4（低优先）：heartbeat 连续失败才切换 / 事件轮询背压 /
   广播 channel 限流 / controller.db 空库校验。

@@ -39,6 +39,19 @@
   DirectLink 验证覆盖）；dist 打包前需关闭运行中的 MeshLink.exe；controller.exe 反复
   消失根因未根治（用户将自写 vbs 自启动）。
 
+## 日志系统优化（2026-09-02，commit e35c4ff）
+
+- **已修（日志可见性）**：agent 默认级别提升到 `info,agent=debug,mesh_agent=debug`；
+  失败时输出 FAIL_SNAPSHOT 故障现场；UI 侧 Error 事件落 app.log。
+- **已修（分类定位）**：read_log_files 的 error 分类改为按 ERROR/WARN 级别解析（不再
+  漏 AUTH_INVALID 等词外错误）+ 关键词兜底扩充；connection/network 关键词扩充；
+  返回 levels 供 UI 着色。
+- **已修（诊断体验）**：诊断中心加「最近失败」展示、日志关键字搜索、仅错误/警告过滤、
+  按级别着色、刷新按钮。
+- **已知局限**：分类日志仍为 agent.log 的过滤视图（非物理分文件）；agent debug 仅覆盖
+  agent 自身模块（directlink/transport 细节保持 info，需手动设 RUST_LOG=directlink=debug
+  才能看打洞/STUN 明细）。日志文件无轮转（长时间运行会增长）。
+
 
 ## 双机公网 DirectLink 连通 + UI 流程顶走/事件丢失修复（2026-09-02）
 
