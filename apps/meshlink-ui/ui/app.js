@@ -1428,16 +1428,27 @@ async function boot() {
     showReconnect();
     showError($("home-error"), errorCode(e), "连接服务启动失败：" + formatError(e));
   }
-  await listen("agent-event", (e) => handleEvent(e.payload));
-  await listen("meshlink-invite", (e) => {
-    // 启动参数 --invite 或 URI 触达：预填兑换框。
-    const v = e.payload && e.payload.value;
-    if (v) {
-      $("redeem-input").value = v;
-      $("modal-redeem").classList.remove("hidden");
-    }
-  });
+  // 关键修复（真实双机复现）：GetStatus 心跳轮询是 UI 状态的权威来源，必须无条件启动，
+  // 且不得被后续事件订阅的失败中断。原实现把 startStatusPoll() 放在两个
+  // `await listen(...)` 之后——若 listen 抛异常（Tauri 事件系统初始化时序问题），boot
+  // 直接中断，心跳永不启动，UI 永久停留在初始渲染（如「已就绪」），无法感知 agent
+  // 后续 READY→CONNECTED 状态变化（实测：agent 已 Connected、GetStatus 返回 CONNECTED，
+  // 但首页一直显示「已就绪」+ 虚拟IP `--`、加入方进度卡在第 1 步、不切「已连接」页）。
+  // 现在：心跳先启动，listen 单独 try/catch，失败也不阻断后续初始化。
   startStatusPoll();
+  try {
+    await listen("agent-event", (e) => handleEvent(e.payload));
+  } catch (e) { /* 事件监听失败：心跳轮询仍可驱动状态展示 */ }
+  try {
+    await listen("meshlink-invite", (e) => {
+      // 启动参数 --invite 或 URI 触达：预填兑换框。
+      const v = e.payload && e.payload.value;
+      if (v) {
+        $("redeem-input").value = v;
+        $("modal-redeem").classList.remove("hidden");
+      }
+    });
+  } catch (e) { /* 同上：心跳轮询不受影响 */ }
   // 读取已保存的连接配置回填设置页（含模式与生效地址）；无保存值保持默认公网。
   try {
     const cfg = await invoke("get_controller_config");
