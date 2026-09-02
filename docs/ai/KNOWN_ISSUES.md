@@ -254,6 +254,30 @@
   必须都选「已有 Controller 地址」指向同一共享 Controller（ADR-004 / dist README 双机联机章节）。
 
 
+## dist 重新打包（2026-09-02 19:20）＋客户机「连公网仍一直寻找设备」排障实录二
+
+- **dist 已重打包**：`dist\MeshLink-v0.1.0-alpha-Windows-x64.zip`（16480549B，19:20:55）覆盖六件套，
+  已含此前全部未打包改动：`51b387a`（controller-client 代理不可用回退直连＋60s 冷却）、
+  `3756b69`（M1-3a PathManager）、`4897262`（P2-1~P2-4），并重构建最新 controller.exe（Go）/ mesh-agent /
+  MeshLink(UI) 三件；n2n-supernode.exe / wintun.dll / README.md 原样保留（未变）。
+  打包前测试全绿：controller-client 17、overlay-router 10、mesh-agent lib 11。新提交 `3e95d80`
+  （Cargo.lock：controller-client tracing 锁文件，51b387a 配套，已 push）。冒烟：mesh-agent/controller
+  可正常启动（--version 不被支持、会直接启动服务，验证时需立即杀进程）。
+- **客户机「连公网仍一直寻找设备」新证据**（虚拟机 agent.log 10:33Z）：UI 与 agent 均已用公网
+  `https://controller.bpbpanel.cc.cd`，但 healthz 持续 `HTTP 530: error code 1033` → 30s 后
+  CONTROLLER_UNREACHABLE → Failed。530/1033 是 **Cloudflare Tunnel 层**错误（tunnel 连接被拒/路由失效），
+  非 MeshLink 代码问题；主机侧本机 18080 healthz 与公网 healthz 曾同时通过，怀疑**主机两个 cloudflared
+  实例（PID 25092/34076）连同一 tunnel 路由冲突**，待清理后复测。
+- **设备身份冲突（最严重）**：虚拟机 agent.log 中 agent 自身 `device_id=dev-c3cc517f2c459ea0`
+  （这是**主机**的 ID），虚拟机正确 ID `dev-4da9787ba66c4de1` 仅作为 `peer_device_id` 出现在
+  OnPeerFound。判定虚拟机的 `%LOCALAPPDATA%\MeshLink\agent\device-identity.json` 系从主机复制，
+  导致 controller 认两台为同一设备、会话匹配混乱。修复：删除虚拟机该 identity 文件（agent 重新生成
+  唯一 ID）＋结束全部 MeshLink/mesh-agent 进程后干净重启。
+- **Controller 运行态**：controller 无守护，用户手动关闭后 18080 立即空闲；测试前需确保 controller 在跑
+  （用户自写 vbs 自启动；本次打包时 18080 为空，用户确认系手动关闭）。客户机 config.json 当前为空
+  （controller_url 未持久化），备份 `config.json.bak-test-residue` 记录曾用主机局域网 192.168.10.147:18080。
+
+
 ## Development Notes
 
 
