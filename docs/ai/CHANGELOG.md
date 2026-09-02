@@ -1,6 +1,33 @@
 # MeshLink Changelog
 
 
+## 审查后续项 P2-1~P2-4：心跳防误报 + 轮询背压 + 广播有界化 + DB 完整性（2026-09-02，commit 4897262）
+
+Changed / Fixed:
+
+- **P2-1 UI heartbeat 连续失败才判定断开（app.js）**：`heartbeat()` 原 GetStatus 单次
+  失败即 `setConnState(DISCONNECTED)` + `autoRetryAgent()`——agent 忙于建链 / Controller
+  偶发超时也会误报「连接服务启动失败」并反复拉起。新增 `S.statusFailStreak`：失败连续
+  ≥3 次（约 9s）才切断开态 + 自动重试；成功任意一次清零。
+- **P2-2 agent 事件轮询动态背压（agent.rs）**：`background_loop` 原固定每 2s `poll_events`，
+  空闲期对 Controller 无意义轮询。改为空轮询指数退避 2s→4s→8s→10s（上限 5 tick），
+  有事件或轮询失败恢复 1 tick。心跳（30s）/在线状态刷新（30s）不受影响。
+- **P2-3 mesh-ipc 广播有界化（server.rs）**：每连接写出通道 `unbounded mpsc::channel`
+  → `sync_channel(512)`，`ClientRegistry` 存 `SyncSender`；广播线程 `send` → `try_send`
+  非阻塞，队列满（慢客户端跟不上）或已断开判 dead 移除——不再让一个慢客户端拖累全体
+  广播线程、也不让事件无限堆积撑爆内存。
+- **P2-4 controller.db 启动完整性校验（store.go）**：`OpenWithOverlayPool` 迁移后加
+  `PRAGMA quick_check`，损坏/被截断的 db 文件启动即明确报错（含 db 路径），不再静默
+  重建空库导致设备身份/会话数据「凭空消失」。内存库（isMemory）跳过。
+
+Verified:
+
+- cargo check 干净；mesh-ipc 19 / mesh-agent lib 11 / JS 契约 4（quick_code/ui_error/
+  recent/boot_heartbeat）/ Go controller 4 包全 PASS。
+- n2n_flow 单跑 3 次全过（3.59/3.48/3.50s）；全跑偶发 486/565 失败为**已知 free_port
+  TOCTOU UDP bind 竞态**（KNOWN_ISSUES），非本次改动引入。
+
+
 ## 日志系统优化：更多日志 + 更清晰定位（2026-09-02，commit e35c4ff）
 
 Changed:

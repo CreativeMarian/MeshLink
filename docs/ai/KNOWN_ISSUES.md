@@ -27,11 +27,9 @@
   （每次连接泄漏空转任务 + 每 2s 刷日志）；现已加 stop 检查退出。
 - **P1-3 已修（keepalive 线程残留）**：abort_session_resources 现调 transport/n2n
   stop_keepalive（Keepalive::Drop 置 stop + join），会话结束即停止保活线程。
-- **Phase2 完成，剩余审查项 P2-1~P2-4（可后续）**：
-  - P2-1：app.js heartbeat 单次失败误报（可加连续 N 次才切换）。
-  - P2-2：事件轮询 2s 偏频（可动态背压）。
-  - P2-3：mesh-ipc 广播 unbounded channel（可限流/丢弃最旧）。
-  - P2-4：controller.db 空库校验缺失（可加启动完整性校验）。
+- **P2-1~P2-4 已修（commit 4897262）**：heartbeat 连续失败才判定断开（防单次超时
+  误报）；事件轮询动态背压（空轮询退避至 10s）；mesh-ipc 广播 sync_channel(512) +
+  try_send（慢客户端判 dead）；controller.db 启动 PRAGMA quick_check 完整性校验。
 - **测试基建抖动（非产品逻辑）**：n2n_flow 偶发 0.00s 端口竞态（free_port TOCTOU），
   单测/顺序跑全 PASS；default_port_alignment 需 18080 空闲（本机被运行中 controller
   占用，停止后复跑）。

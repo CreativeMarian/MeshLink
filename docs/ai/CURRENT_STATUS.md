@@ -118,6 +118,22 @@ v0.1.0
     （Keepalive::Drop 置 stop + join 线程）清理 DirectLink/N2N peer keepalive。
     验证：cargo check 干净、lib 11 / friend_flow / n2n_flow(--test-threads=1, 3) 全 PASS。
 
+[x] 审查后续项 P2-1~P2-4（commit 4897262）：
+    P2-1：UI heartbeat 连续失败才判定断开——GetStatus 单次偶发超时不再误报
+    「连接服务启动失败」/误触发 autoRetryAgent；连续 ≥3 次(约 9s)才切断开态，
+    成功任意一次即清零（app.js statusFailStreak）。
+    P2-2：agent 事件轮询动态背压——空轮询指数退避 2s→4s→8s→10s(上限 5 tick)，
+    有事件或失败恢复 1 tick，减少空闲期对 Controller 无意义轮询（agent.rs）。
+    P2-3：mesh-ipc 广播有界化——连接写出通道 unbounded→sync_channel(512)，
+    广播 try_send 非阻塞，慢客户端(队列满/断开)判 dead 移除，防内存膨胀拖累
+    全体（server.rs SyncSender）。
+    P2-4：controller.db 启动完整性校验——OpenWithOverlayPool 加 PRAGMA quick_check，
+    文件损坏时明确报错(含 db 路径)而非静默重建空库导致设备身份丢失（store.go，
+    内存库 isMemory 跳过）。
+    验证：cargo check 干净；mesh-ipc 19 / mesh-agent lib 11 / JS 契约 4 / Go
+    controller 4 包全 PASS；n2n_flow 单跑 3 次全过（全跑 486/565 为已知 free_port
+    TOCTOU UDP bind 竞态，非本次回归）。
+
 
 ## Current Development
 
